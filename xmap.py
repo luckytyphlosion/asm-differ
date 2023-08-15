@@ -77,6 +77,11 @@ class OvAddr:
         return {"overlay": self.overlay, "addr": self.addr}
 
     @classmethod
+    def parse(cls, full_addr_str):
+        overlay_str, addr_str = full_addr_str.split(":")
+        return cls(int(overlay_str, 16), int(addr_str, 16))
+
+    @classmethod
     def unserialize(cls, serialized_input):
         return cls(serialized_input["overlay"], serialized_input["addr"])
 

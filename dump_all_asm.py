@@ -8,6 +8,7 @@ import json
 import re
 
 decomposed_function_addr_split_regex = re.compile("^[0-9a-f]{8} <", flags=re.MULTILINE)
+dummy_or_zero_function_regex = re.compile("^(?:\s+[0-9a-f]+:\s+2000\s+movs\s+r0,\s+#0\n)?\s+[0-9a-f]+:\s+4770\s+bx\s+lr", flags=0)
 
 def check_symbol_deadstripped(xmap, function_name, obj_basename):
     possible_symbols = xmap.symbols_by_name.get(function_name)
@@ -31,10 +32,10 @@ def check_symbol_deadstripped(xmap, function_name, obj_basename):
 
     return found_symbol_serialized
 
-# python3 diff.py --decomp-diff-1 retsam_decomposed_function_database.json --decomp-diff-2 pokeheartgold_decomposed_function_database.json --decomp-diff-results retsam_pokeheartgold_comparison.json -I --no-show-branches NitroMain
+# python3 diff.py --decomp-diff-1 retsam_decomposed_function_database.json --decomp-diff-2 pokeheartgold_decomposed_function_database.json --decomp-diff-results-info retsam_pokeheartgold_processed.dump --decomp-diff-results-score retsam_pokeheartgold_scores.dump -I --no-show-branches NitroMain
 
 def main():
-    MODE = 0
+    MODE = 1
     if MODE == 0:
         DEFAULT_XMAP_FILENAME = "../pokeheartgold/build/heartgold.us/main.elf.xMAP"
         DEFAULT_BUILD_DIR = "../pokeheartgold/build"
@@ -83,6 +84,7 @@ def main():
 
     decomposed_function_database_contents = []
     obj_symbol_names = set()
+    iter_count = 0
 
     for obj_full_filename in existing_obj_full_filenames:
         print(f"Disassembling {obj_full_filename}!")
@@ -96,12 +98,18 @@ def main():
             print(f"Found non-text object {obj_basename}!")
             continue
 
-        no_section_asm_differ_output = stripped_asm_differ_output.replace("Disassembly of section .text:", "")
+        no_section_asm_differ_output = stripped_asm_differ_output.replace("Disassembly of section .text:", "").strip()
 
         decomposed_functions_str_for_obj = [x.strip() for x in decomposed_function_addr_split_regex.split(no_section_asm_differ_output)]
-
         for decomposed_function_str in decomposed_functions_str_for_obj:
+            if decomposed_function_str == "":
+                continue
+
             function_name, seperator, rest_of_function = decomposed_function_str.partition(">:\n")
+            if dummy_or_zero_function_regex.match(rest_of_function):
+                print(f"Found dummy or return zero function {function_name}!\n{rest_of_function}")
+                continue
+
             #match_obj = decomposed_function_str_name_regex.match(function_name_line)
             #if not match_obj:
             #    raise RuntimeError(f"Non-matching function_name_line found! function_name_line: {function_name_line}, obj_basename: {obj_basename}, asm_differ_output: {asm_differ_output}")
@@ -132,13 +140,17 @@ def main():
 
             obj_symbol_names.add(function_name)
             decomposed_function_database_contents.append(decomposed_function)
+        
+        iter_count += 1
+        #if iter_count > 5:
+        #    break
 
     decomposed_function_database_contents.sort(key=lambda x: OvAddr.unserialize(x["symbol"]["full_addr"]))
 
-    xmap_symbol_names = set(xmap.symbols_by_name.keys())
+    xmap_symbol_names = set(symbol_name for symbol_name, symbol in xmap.symbols_by_name.items() if symbol[0].section == ".text")
 
     missing_symbol_names = xmap_symbol_names - obj_symbol_names
-    with open(f"missing_symbol_names_{args.id}.txt", "w+") as f:
+    with open(f"missing_symbol_names_{args.id}.dump", "w+") as f:
         f.write("\n".join(missing_symbol_names))
 
     decomposed_function_database = {

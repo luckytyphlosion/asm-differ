@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 import pathlib
 import subprocess
 import pickle
+import key_int
 
 from xmap import Symbol
 
@@ -392,6 +393,11 @@ if __name__ == "__main__":
         action="store_true"
     )
     parser.add_argument(
+        "--line-nums-start-at-zero",
+        dest="line_nums_start_at_zero",
+        action="store_true"
+    )
+    parser.add_argument(
         "--format",
         choices=("color", "plain", "html", "json"),
         default="color",
@@ -516,6 +522,7 @@ class Config:
     algorithm: str
     reg_categories: Dict[str, int]
     score_only: bool
+    line_nums_start_at_zero: bool 
 
     # Score options
     score_stack_differences = True
@@ -610,7 +617,8 @@ def create_config(args: argparse.Namespace, project: ProjectSettings) -> Config:
         ignore_addr_diffs=args.ignore_addr_diffs,
         algorithm=args.algorithm,
         reg_categories=project.reg_categories,
-        score_only=args.score_only
+        score_only=args.score_only,
+        line_nums_start_at_zero=args.line_nums_start_at_zero
     )
 
 
@@ -1750,6 +1758,11 @@ class AsmProcessorPPC(AsmProcessor):
         return mnemonic == "blr"
 
 
+NEWLINE = "\n"
+
+class MyBreakError(RuntimeError):
+    pass
+
 class AsmProcessorARM32(AsmProcessor):
     def process_reloc(self, row: str, prev: str) -> Tuple[str, Optional[str]]:
         arch = self.config.arch
@@ -1808,7 +1821,11 @@ class AsmProcessorARM32(AsmProcessor):
                 continue
 
             # Add data symbol and its address to the line.
-            line_original = lines_by_line_number[line.data_pool_addr].original
+            try:
+                line_original = lines_by_line_number[line.data_pool_addr].original
+            except KeyError as e:
+                raise MyBreakError(f"lines: {NEWLINE.join(line.original.rstrip(NEWLINE) for line in lines)}")
+
             value = line_original.split()[1]
             addr = "{:x}".format(line.data_pool_addr)
             line.original = line.normalized_original + f"={value} ({addr})"
@@ -2557,6 +2574,8 @@ def process(dump: str, config: Config) -> List[Line]:
     data_refs: Dict[int, Dict[str, List[int]]] = defaultdict(lambda: defaultdict(list))
     output: List[Line] = []
     lines = dump.split("\n")
+    base_line_num = None
+
     while i < len(lines):
         row = lines[i]
         i += 1
@@ -2596,14 +2615,6 @@ def process(dump: str, config: Config) -> List[Line]:
             source_lines.append(row)
             continue
 
-        # If the instructions loads a data pool symbol, extract the address of
-        # the symbol.
-        data_pool_addr = None
-        pool_match = re.search(ARM32_LOAD_POOL_PATTERN, row)
-        if pool_match:
-            offset = pool_match.group(3).split(" ")[0][1:]
-            data_pool_addr = int(offset, 16)
-
         m_comment = re.search(arch.re_comment, row)
         comment = m_comment[0] if m_comment else None
         row = re.sub(arch.re_comment, "", row)
@@ -2612,6 +2623,23 @@ def process(dump: str, config: Config) -> List[Line]:
         tabs = row.split("\t")
         line_num = eval_line_num(line_num_str.strip())
 
+        if base_line_num is None:
+            base_line_num = line_num
+
+        # If the instructions loads a data pool symbol, extract the address of
+        # the symbol.
+        data_pool_addr = None
+        pool_match = re.search(ARM32_LOAD_POOL_PATTERN, row)
+        if pool_match:
+            offset = pool_match.group(3).split(" ")[0][1:]
+            data_pool_addr = int(offset, 16)
+            if config.line_nums_start_at_zero:
+                data_pool_addr -= base_line_num
+
+        if config.line_nums_start_at_zero:
+            line_num -= base_line_num
+
+        #print(f"line_num_str: {line_num_str}, line_num: {line_num}")
         # TODO: use --no-show-raw-insn for all arches
         if arch.name == "i686":
             row = "\t".join(tabs[1:])
@@ -2866,7 +2894,8 @@ def diff_lines(
 
 
 def diff_sameline(
-    old_line: Line, new_line: Line, config: Config, symbol_map: Dict[str, str]
+    old_line: Line, new_line: Line, config: Config, 
+    symbol_map: Dict[str, str]
 ) -> Tuple[int, int, bool]:
 
     old = old_line.scorable_line
@@ -3024,6 +3053,10 @@ def trim_nops(lines: List[Line], arch: ArchSettings) -> List[Line]:
         lines.pop()
     return lines
 
+def do_diff_score_only(lines1: List[Line], lines2: List[Line], config: Config) -> int:
+    diffed_lines = diff_lines(lines1, lines2, config.algorithm)
+    score = score_diff_lines(diffed_lines, config, {})
+    return score
 
 def do_diff(lines1: List[Line], lines2: List[Line], config: Config) -> Diff:
     if config.show_source:
@@ -3033,16 +3066,16 @@ def do_diff(lines1: List[Line], lines2: List[Line], config: Config) -> Diff:
     output: List[OutputLine] = []
     symbol_map: Dict[str, str] = {}
 
-    sc1 = symbol_formatter("base-reg", 0)
-    sc2 = symbol_formatter("my-reg", 0)
-    sc3 = symbol_formatter("base-stack", 4)
-    sc4 = symbol_formatter("my-stack", 4)
-    sc5 = symbol_formatter("base-branch", 0)
-    sc6 = symbol_formatter("my-branch", 0)
-    bts1: Set[int] = set()
-    bts2: Set[int] = set()
-
     if not args.score_only and config.show_branches:
+        sc1 = symbol_formatter("base-reg", 0)
+        sc2 = symbol_formatter("my-reg", 0)
+        sc3 = symbol_formatter("base-stack", 4)
+        sc4 = symbol_formatter("my-stack", 4)
+        sc5 = symbol_formatter("base-branch", 0)
+        sc6 = symbol_formatter("my-branch", 0)
+        bts1: Set[int] = set()
+        bts2: Set[int] = set()
+
         for (lines, btset, sc) in [
             (lines1, bts1, sc5),
             (lines2, bts2, sc6),
@@ -3675,40 +3708,18 @@ class Display:
         self.less_proc.kill()
         self.ready_queue.get()
 
-
-#
-#DECOMP_DIFF_RESULTS_DATA_TEMPLATE = {
-#    "processed": {"key": True},
-#    "scores": {
-#        "combined_key": 0
-#    }
-#}
-
-ID_SHORTHANDS = "!^"
-
-def read_in_key_value_file(filename):
-    with open(filename, "r") as f:
-        #lines = f.read.splitlines()
-        dict_obj = {(split_line := line.rstrip("\n").split("|", maxsplit=1))[0]: int(split_line[1]) for line in f}
-        return dict_obj
-
-def write_key_value_file(filename, data):
-    output = "".join([f"{key}|{value}\n" for key, value in data.items()])
-    with open(filename, "w+") as f:
-        f.write(output)
-
 class DecompDiffResults:
     __slots__ = ("info_filename", "scores_filename", "processed", "scores", "cur_processed_output", "cur_score_output")
 
     def __init__(self, info_filename, scores_filename):
         if pathlib.Path(info_filename).is_file():
-            self.processed = read_in_key_value_file(info_filename)
+            self.processed = key_int.read_in_key_integer_file(info_filename)
         else:
             pathlib.Path(info_filename).touch()
             self.processed = {}
 
         if pathlib.Path(scores_filename).is_file():
-            self.scores = read_in_key_value_file(scores_filename)
+            self.scores = key_int.read_in_key_integer_file(scores_filename)
         else:
             pathlib.Path(scores_filename).touch()
             self.scores = {}
@@ -3717,16 +3728,6 @@ class DecompDiffResults:
         self.cur_score_output = []
         self.info_filename = info_filename
         self.scores_filename = scores_filename
-
-    def get_combined_function_key(self, decomposed_function_1, decomposed_function_2):
-        key_1 = decomposed_function_1.key
-        key_2 = decomposed_function_2.key
-        if key_1 < key_2:
-            combined_key = f"{key_1};{key_2}"
-        else:
-            combined_key = f"{key_2};{key_1}"
-
-        return combined_key
 
     def is_function_processed(self, decomposed_function):
         return decomposed_function.key in self.processed
@@ -3740,7 +3741,7 @@ class DecompDiffResults:
         self.cur_score_output.append(f"{combined_key}|{score}\n")
 
     def get_functions_score(self, decomposed_function_1, decomposed_function_2):
-        combined_key = self.get_combined_function_key(decomposed_function_1, decomposed_function_2)
+        combined_key = DecomposedFunction.get_combined_key(decomposed_function_1, decomposed_function_2)
         functions_score = self.scores.get(combined_key)
         if functions_score is None:
             return -1
@@ -3748,12 +3749,10 @@ class DecompDiffResults:
         return functions_score
 
     def set_functions_score(self, decomposed_function_1, decomposed_function_2, score):
-        combined_key = self.get_combined_function_key(decomposed_function_1, decomposed_function_2)
+        combined_key = DecomposedFunction.get_combined_key(decomposed_function_1, decomposed_function_2)
         self.add_score(combined_key, score)
 
-    def set_function_as_processed_and_save(self, decomposed_function):
-        self.set_function_processed(decomposed_function)
-
+    def save(self):
         with open(self.info_filename, "a") as f:
             f.write("".join(self.cur_processed_output))
 
@@ -3782,9 +3781,15 @@ class DecomposedFunction:
 
     def gen_processed_lines(self, config):
         if self.processed_lines is None:
-            self.processed_lines = process(self.contents, config)
+            try:
+                self.processed_lines = process(self.contents, config)
+            except MyBreakError as e:
+                raise RuntimeError(f"function name: {self.name}") from e
 
         return self
+
+    def return_key_and_self(self):
+        return self.key, self
 
     @classmethod
     def unserialize(cls, serialized_input, short_id):
@@ -3795,10 +3800,27 @@ class DecomposedFunction:
 
     def get_key(self):
         if self.deadstripped:
+            # deadstripped funcs have no addr, so have to rely on obj name and symbol
             return f"{self.short_id}.{self.symbol.filename}.{self.name}"
         else:
             return f"{self.short_id}.{self.symbol.full_addr}"
-            # deadstripped funcs have no addr, so have to rely on obj name and symbol
+
+    @staticmethod
+    def get_combined_key(decomposed_function_1, decomposed_function_2):
+        key_1 = decomposed_function_1.key
+        key_2 = decomposed_function_2.key
+        if key_1 < key_2:
+            combined_key = f"{key_1};{key_2}"
+        else:
+            combined_key = f"{key_2};{key_1}"
+
+        return combined_key
+
+    @staticmethod
+    def key_to_symbol(key, short_id_to_decomp_db):
+        short_id = combined_key[0]
+        decomp_db = short_id_to_xmap[short_id]
+        return decomp_db.decomposed_functions_by_key[key].symbol
 
     def serialize(self):
         serialized_processed_lines = [processed_line.serialize() for processed_line in self.processed_lines]
@@ -3813,12 +3835,13 @@ class DecomposedFunction:
         }
 
 class DecompDB:
-    __slots__ = ("id", "short_id", "contents")
+    __slots__ = ("id", "short_id", "contents", "decomposed_functions_by_key")
 
     def __init__(self, id, contents):
         self.id = id
         self.short_id = self.id[0]
         self.contents = contents
+        self.decomposed_functions_by_key = {decomposed_function.key: decomposed_function for decomposed_function in self.contents}
 
     @classmethod
     def unserialize(cls, decomp_db_dict, config):
@@ -3885,27 +3908,33 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
     #for decomposed_function_2 in decomp_db_2_contents:
     #    decomp_diff_results.add_function_if_not_exist(decomposed_function_2)
 
-    for decomposed_function_1 in decomp_db_1_contents:
-        if decomp_diff_results.is_function_processed(decomposed_function_1):
-            print(f"Skipping already processed function {decomposed_function_1.name}!")
-            continue
-        print(f"Processing {decomposed_function_1.name} from {decomp_db_1.id}!")
-
-        decomposed_function_1_processed_lines = decomposed_function_1.processed_lines
-
-        for decomposed_function_2 in decomp_db_2_contents:
-            score = decomp_diff_results.get_functions_score(decomposed_function_1, decomposed_function_2)
-            if score != -1:
+    try:
+        for decomposed_function_1 in decomp_db_1_contents:
+            if decomp_diff_results.is_function_processed(decomposed_function_1):
+                print(f"Skipping already processed function {decomposed_function_1.name}!")
                 continue
+            print(f"Processing {decomposed_function_1.name} from {decomp_db_1.id}!")
+    
+            decomposed_function_1_processed_lines = decomposed_function_1.processed_lines
+    
+            for decomposed_function_2 in decomp_db_2_contents:
+                score = decomp_diff_results.get_functions_score(decomposed_function_1, decomposed_function_2)
+                if score != -1:
+                    continue
+    
+                if len(decomposed_function_1.processed_lines) != len(decomposed_function_2.processed_lines):
+                    continue
+    
+                #print(f"Processing {decomposed_function_2.name} from {decomp_db_2.id}!")
+                score = do_diff_score_only(decomposed_function_1_processed_lines, decomposed_function_2.processed_lines, config)
+                decomp_diff_results.set_functions_score(decomposed_function_1, decomposed_function_2, score)
+    
+            decomp_diff_results.set_function_processed(decomposed_function_1)
+    except KeyboardInterrupt as e:
+        decomp_diff_results.save()
+        raise e
 
-            if len(decomposed_function_1.processed_lines) != len(decomposed_function_2.processed_lines):
-                continue
-
-            #print(f"Processing {decomposed_function_2.name} from {decomp_db_2.id}!")
-            diff_output = do_diff(decomposed_function_1_processed_lines, decomposed_function_2.processed_lines, config)
-            decomp_diff_results.set_functions_score(decomposed_function_1, decomposed_function_2, diff_output.score)
-
-        decomp_diff_results.set_function_as_processed_and_save(decomposed_function_1)
+    decomp_diff_results.save()
 
 def main() -> None:
     args = parser.parse_args()
