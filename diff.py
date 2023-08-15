@@ -3818,8 +3818,11 @@ class DecomposedFunction:
 
     @staticmethod
     def key_to_symbol(key, short_id_to_decomp_db):
-        short_id = combined_key[0]
-        decomp_db = short_id_to_xmap[short_id]
+        short_id = key[0]
+        try:
+            decomp_db = short_id_to_decomp_db[short_id]
+        except KeyError:
+            raise RuntimeError(f"KeyError in key_to_symbol: {key}")
         return decomp_db.decomposed_functions_by_key[key].symbol
 
     def serialize(self):
