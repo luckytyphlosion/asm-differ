@@ -3,6 +3,13 @@
 import argparse
 import enum
 import sys
+from dataclasses import dataclass, field
+import pathlib
+import subprocess
+import pickle
+
+from xmap import Symbol
+
 from typing import (
     Any,
     Callable,
@@ -19,6 +26,16 @@ from typing import (
     Union,
 )
 
+def run_objdump_ds(
+    obj_file: str,
+) -> str:
+
+    #except subprocess.TimeoutExpired as e:
+    #    raise ObjdumpError("Timeout expired")
+    #except subprocess.CalledProcessError as e:
+    #    raise ObjdumpError.from_process_error(e)
+
+    return out
 
 def fail(msg: str) -> NoReturn:
     print(msg, file=sys.stderr)
@@ -136,6 +153,38 @@ if __name__ == "__main__":
         one non-stripped. Requires objdump from binutils 2.33+.""",
     )
     parser.add_argument(
+        "-ds",
+        "--ds-test",
+        dest="ds_test",
+        action="store_true"
+    )
+    parser.add_argument(
+        "-ca",
+        "--compare-asm",
+        dest="compare_asm",
+        metavar="FILE",
+    )
+    parser.add_argument(
+        "--decomp-diff-1",
+        dest="decomp_diff_1",
+        metavar="FILE"
+    )
+    parser.add_argument(
+        "--decomp-diff-2",
+        dest="decomp_diff_2",
+        metavar="FILE"
+    )
+    parser.add_argument(
+        "--decomp-diff-results-info",
+        dest="decomp_diff_results_info",
+        metavar="FILE",
+    )
+    parser.add_argument(
+        "--decomp-diff-results-scores",
+        dest="decomp_diff_results_scores",
+        metavar="FILE",
+    )
+    parser.add_argument(
         "-c",
         "--source",
         dest="show_source",
@@ -191,6 +240,13 @@ if __name__ == "__main__":
         dest="write_asm",
         metavar="FILE",
         help="Write the current assembly output to file, e.g. for use with --base-asm.",
+    )
+    parser.add_argument(
+        "--print-asm",
+        dest="print_asm",
+        action="store_true",
+        default=False,
+        help="Print the current assembly output to stdout, e.g. for use with --base-asm.",
     )
     parser.add_argument(
         "-m",
@@ -331,6 +387,11 @@ if __name__ == "__main__":
         Incompatible with --watch.""",
     )
     parser.add_argument(
+        "--score-only",
+        dest="score_only",
+        action="store_true"
+    )
+    parser.add_argument(
         "--format",
         choices=("color", "plain", "html", "json"),
         default="color",
@@ -454,6 +515,7 @@ class Config:
     ignore_addr_diffs: bool
     algorithm: str
     reg_categories: Dict[str, int]
+    score_only: bool
 
     # Score options
     score_stack_differences = True
@@ -548,6 +610,7 @@ def create_config(args: argparse.Namespace, project: ProjectSettings) -> Config:
         ignore_addr_diffs=args.ignore_addr_diffs,
         algorithm=args.algorithm,
         reg_categories=project.reg_categories,
+        score_only=args.score_only
     )
 
 
@@ -562,6 +625,7 @@ def get_objdump_executable(objdump_executable: Optional[str]) -> str:
         "sh-elf-objdump",
         "sh4-linux-gnu-objdump",
         "m68k-elf-objdump",
+        #"./ds_objdump.sh"
     ]
     for objdump_cand in objdump_candidates:
         try:
@@ -1094,20 +1158,29 @@ def maybe_get_objdump_source_flags(config: Config) -> List[str]:
     return flags
 
 
-def run_objdump(cmd: ObjdumpCommand, config: Config, project: ProjectSettings) -> str:
+def run_objdump(cmd: ObjdumpCommand, config: Config, project: ProjectSettings, ds_test=None) -> str:
     flags, target, restrict = cmd
     try:
-        out = subprocess.run(
-            [project.objdump_executable]
-            + config.arch.arch_flags
-            + project.objdump_flags
-            + flags
-            + [target],
-            check=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            universal_newlines=True,
-        ).stdout
+        if ds_test:
+            out = subprocess.run(
+                ["/opt/devkitpro/devkitARM/bin/arm-none-eabi-objdump", "-drz", target],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True
+            ).stdout
+        else:
+            out = subprocess.run(
+                [project.objdump_executable]
+                + config.arch.arch_flags
+                + project.objdump_flags
+                + flags
+                + [target],
+                check=True,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                universal_newlines=True,
+            ).stdout
     except subprocess.CalledProcessError as e:
         print(e.stdout)
         print(e.stderr)
@@ -1120,11 +1193,11 @@ def run_objdump(cmd: ObjdumpCommand, config: Config, project: ProjectSettings) -
         with open(target, "rb") as f:
             obj_data = f.read()
 
-    return preprocess_objdump_out(restrict, obj_data, out, config)
+    return preprocess_objdump_out(restrict, obj_data, out, config, ds_test)
 
 
 def preprocess_objdump_out(
-    restrict: Optional[str], obj_data: Optional[bytes], objdump_out: str, config: Config
+    restrict: Optional[str], obj_data: Optional[bytes], objdump_out: str, config: Config, ds_test=None
 ) -> str:
     """
     Preprocess the output of objdump into a format that `process()` expects.
@@ -1139,7 +1212,11 @@ def preprocess_objdump_out(
     if restrict is not None:
         out = restrict_to_function(out, restrict)
     else:
-        for i in range(7):
+        if ds_test:
+            strip_start_line = 5
+        else:
+            strip_start_line = 7
+        for i in range(strip_start_line):
             out = out[out.find("\n") + 1 :]
         out = out.rstrip("\n")
 
@@ -1463,7 +1540,7 @@ def dump_objfile(
         fail("numerical start address not supported with -o; pass a function name")
 
     objfile = config.objfile
-    if not objfile:
+    if not objfile and not config.compare_asm:
         objfile, _ = search_map_file(start, project, config, for_binary=False)
 
     if not objfile:
@@ -1691,9 +1768,25 @@ class AsmProcessorARM32(AsmProcessor):
 
     def _normalize_arch_specific(self, mnemonic: str, row: str) -> str:
         if self.config.ignore_addr_diffs:
+            #old_row = row
             row = self._normalize_bl(mnemonic, row)
+            row = self._normalize_word(mnemonic, row)
+            #print(f"old_row: {old_row}\nrow: {row}\n")
+            
+            #print(f"mnemonic: {mnemonic}")
         row = self._normalize_data_pool(row)
         return row
+
+    def _normalize_word(self, mnemonic: str, row: str) -> str:
+        if mnemonic != ".word":
+            return row
+
+        value = row.split(maxsplit=1)[1]
+        try:
+            int(value, 0)
+            return row
+        except ValueError:
+            return ".word <ignore>"
 
     def _normalize_bl(self, mnemonic: str, row: str) -> str:
         if mnemonic != "bl":
@@ -2381,23 +2474,76 @@ def pad_mnemonic(line: str) -> str:
     mn, args = line.split("\t", 1)
     return f"{mn:<7s} {args}"
 
+SOURCE_LINES_DEFAULT = []
 
-@dataclass
 class Line:
-    mnemonic: str
-    diff_row: str
-    original: str
-    normalized_original: str
-    scorable_line: str
-    symbol: Optional[str] = None
-    line_num: Optional[int] = None
-    branch_target: Optional[int] = None
-    data_pool_addr: Optional[int] = None
-    source_filename: Optional[str] = None
-    source_line_num: Optional[int] = None
-    source_lines: List[str] = field(default_factory=list)
-    comment: Optional[str] = None
+    __slots__ = ("mnemonic", "diff_row", "original", "normalized_original", "scorable_line", "symbol", "line_num", "branch_target", "data_pool_addr", "source_filename", "source_line_num", "source_lines", "comment")
 
+    def __init__(self,
+        mnemonic: str,
+        diff_row: str,
+        original: str,
+        normalized_original: str,
+        scorable_line: str,
+        symbol: Optional[str] = None,
+        line_num: Optional[int] = None,
+        branch_target: Optional[int] = None,
+        data_pool_addr: Optional[int] = None,
+        source_filename: Optional[str] = None,
+        source_line_num: Optional[int] = None,
+        source_lines: List[str] = SOURCE_LINES_DEFAULT,
+        comment: Optional[str] = None
+    ):
+        self.mnemonic = mnemonic
+        self.diff_row = diff_row
+        self.original = original
+        self.normalized_original = normalized_original
+        self.scorable_line = scorable_line
+        self.symbol = symbol
+        self.line_num = line_num
+        self.branch_target = branch_target
+        self.data_pool_addr = data_pool_addr
+        self.source_filename = source_filename
+        self.source_line_num = source_line_num
+
+        if source_lines is SOURCE_LINES_DEFAULT:
+            source_lines = []
+
+        self.source_lines = source_lines
+        self.comment = comment
+
+    def serialize(self):
+        serialized_line = {
+            "mnemonic": self.mnemonic,
+            "diff_row": self.diff_row,
+            "original": self.original,
+            "normalized_original": self.normalized_original,
+            "scorable_line": self.scorable_line,
+        }
+
+        if self.symbol is not None:
+            serialized_line["symbol"] = self.symbol
+
+        if self.branch_target is not None:
+            serialized_line["branch_target"] = self.branch_target
+
+        if self.data_pool_addr is not None:
+            serialized_line["data_pool_addr"] = self.data_pool_addr
+
+        return serialized_line
+
+    @classmethod
+    def unserialize(cls, serialized_line):
+        return cls(
+            mnemonic=serialized_line["mnemonic"],
+            diff_row=serialized_line["diff_row"],
+            original=serialized_line["original"],
+            normalized_original=serialized_line["normalized_original"],
+            scorable_line=serialized_line["scorable_line"],
+            symbol=serialized_line.get("symbol"),
+            branch_target=serialized_line.get("branch_target"),
+            data_pool_addr=serialized_line.get("data_pool_addr")
+        )
 
 def process(dump: str, config: Config) -> List[Line]:
     arch = config.arch
@@ -2896,7 +3042,7 @@ def do_diff(lines1: List[Line], lines2: List[Line], config: Config) -> Diff:
     bts1: Set[int] = set()
     bts2: Set[int] = set()
 
-    if config.show_branches:
+    if not args.score_only and config.show_branches:
         for (lines, btset, sc) in [
             (lines1, bts1, sc5),
             (lines2, bts2, sc6),
@@ -2907,205 +3053,193 @@ def do_diff(lines1: List[Line], lines2: List[Line], config: Config) -> Diff:
                     btset.add(bt)
                     sc(str(bt))
 
-    lines1 = trim_nops(lines1, arch)
-    lines2 = trim_nops(lines2, arch)
+    #lines1 = trim_nops(lines1, arch)
+    #lines2 = trim_nops(lines2, arch)
 
     diffed_lines = diff_lines(lines1, lines2, config.algorithm)
 
-    line_num_base = -1
-    line_num_offset = 0
-    line_num_2to1 = {}
-    for (line1, line2) in diffed_lines:
-        if line1 is not None and line1.line_num is not None:
-            line_num_base = line1.line_num
-            line_num_offset = 0
-        else:
-            line_num_offset += 1
-        if line2 is not None and line2.line_num is not None:
-            line_num_2to1[line2.line_num] = (line_num_base, line_num_offset)
-
-    for (line1, line2) in diffed_lines:
-        line_color1 = line_color2 = sym_color = BasicFormat.NONE
-        line_prefix = " "
-        is_data_ref = False
-        out1 = Text() if not line1 else Text(pad_mnemonic(line1.original))
-        out2 = Text() if not line2 else Text(pad_mnemonic(line2.original))
-        if line1 and line2 and line1.diff_row == line2.diff_row:
-            if line1.diff_row == "<data-ref>":
-                if line1.normalized_original != line2.normalized_original:
-                    line_prefix = "i"
-                    sym_color = BasicFormat.DIFF_CHANGE
-                    out1 = out1.reformat(sym_color)
-                    out2 = out2.reformat(sym_color)
-                is_data_ref = True
-            elif (
-                line1.normalized_original == line2.normalized_original
-                and line2.branch_target is None
-            ):
-                # Fast path: no coloring needed. We don't include branch instructions
-                # in this case because we need to check that their targets line up in
-                # the diff, and don't just happen to have the are the same address
-                # by accident.
-                pass
+    if not args.score_only:
+        line_num_base = -1
+        line_num_offset = 0
+        line_num_2to1 = {}
+        for (line1, line2) in diffed_lines:
+            if line1 is not None and line1.line_num is not None:
+                line_num_base = line1.line_num
+                line_num_offset = 0
             else:
-                mnemonic = line1.original.split()[0]
-                branchless1, address1 = out1.plain(), ""
-                branchless2, address2 = out2.plain(), ""
-                if mnemonic in arch.instructions_with_address_immediates:
-                    branchless1, address1 = split_off_address(branchless1)
-                    branchless2, address2 = split_off_address(branchless2)
-
-                out1 = Text(branchless1)
-                out2 = Text(branchless2)
-                out1, out2 = format_fields(
-                    arch.re_imm, out1, out2, lambda _: BasicFormat.IMMEDIATE
-                )
-
-                if line2.branch_target is not None:
-                    target = line2.branch_target
-                    line2_target = line_num_2to1.get(line2.branch_target)
-                    if line2_target is None:
-                        # If the target is outside the disassembly, extrapolate.
-                        # This only matters near the bottom.
-                        assert line2.line_num is not None
-                        line2_line = line_num_2to1[line2.line_num]
-                        line2_target = (line2_line[0] + (target - line2.line_num), 0)
-
-                    # Adjust the branch target for scoring and three-way diffing.
-                    norm2, norm_branch2 = split_off_address(line2.normalized_original)
-                    if norm_branch2 != "<ignore>":
-                        retargetted = hex(line2_target[0]).replace("0x", "")
-                        if line2_target[1] != 0:
-                            retargetted += f"+{line2_target[1]}"
-                        line2.normalized_original = norm2 + retargetted
-                        sc_base, _ = split_off_address(line2.scorable_line)
-                        line2.scorable_line = sc_base + retargetted
-                    same_target = line2_target == (line1.branch_target, 0)
-                else:
-                    # Do a naive comparison for non-branches (e.g. function calls).
-                    same_target = address1 == address2
-
-                if normalize_imms(branchless1, arch) == normalize_imms(
-                    branchless2, arch
-                ):
-                    (
-                        stack_penalties,
-                        regalloc_penalties,
-                        has_symbol_mismatch,
-                    ) = diff_sameline(line1, line2, config, symbol_map)
-
-                    if (
-                        regalloc_penalties == 0
-                        and stack_penalties == 0
-                        and not has_symbol_mismatch
-                    ):
-                        # ignore differences due to %lo(.rodata + ...) vs symbol
-                        out1 = out1.reformat(BasicFormat.NONE)
-                        out2 = out2.reformat(BasicFormat.NONE)
-                    elif line2.branch_target is not None and same_target:
-                        # same-target branch, don't color
-                        pass
-                    else:
-                        # must have an imm difference (or else we would have hit the
-                        # fast path)
-                        sym_color = BasicFormat.IMMEDIATE
+                line_num_offset += 1
+            if line2 is not None and line2.line_num is not None:
+                line_num_2to1[line2.line_num] = (line_num_base, line_num_offset)
+    
+        for (line1, line2) in diffed_lines:
+            line_color1 = line_color2 = sym_color = BasicFormat.NONE
+            line_prefix = " "
+            is_data_ref = False
+            out1 = Text() if not line1 else Text(pad_mnemonic(line1.original))
+            out2 = Text() if not line2 else Text(pad_mnemonic(line2.original))
+            if line1 and line2 and line1.diff_row == line2.diff_row:
+                if line1.diff_row == "<data-ref>":
+                    if line1.normalized_original != line2.normalized_original:
                         line_prefix = "i"
+                        sym_color = BasicFormat.DIFF_CHANGE
+                        out1 = out1.reformat(sym_color)
+                        out2 = out2.reformat(sym_color)
+                    is_data_ref = True
+                elif (
+                    line1.normalized_original == line2.normalized_original
+                    and line2.branch_target is None
+                ):
+                    # Fast path: no coloring needed. We don't include branch instructions
+                    # in this case because we need to check that their targets line up in
+                    # the diff, and don't just happen to have the are the same address
+                    # by accident.
+                    pass
                 else:
-                    out1, out2 = format_fields(arch.re_sprel, out1, out2, sc3, sc4)
-                    if normalize_stack(branchless1, arch) == normalize_stack(
+                    mnemonic = line1.original.split()[0]
+                    branchless1, address1 = out1.plain(), ""
+                    branchless2, address2 = out2.plain(), ""
+                    if mnemonic in arch.instructions_with_address_immediates:
+                        branchless1, address1 = split_off_address(branchless1)
+                        branchless2, address2 = split_off_address(branchless2)
+    
+                    out1 = Text(branchless1)
+                    out2 = Text(branchless2)
+                    out1, out2 = format_fields(
+                        arch.re_imm, out1, out2, lambda _: BasicFormat.IMMEDIATE
+                    )
+    
+                    if line2.branch_target is not None:
+                        target = line2.branch_target
+                        line2_target = line_num_2to1.get(line2.branch_target)
+                        if line2_target is None:
+                            # If the target is outside the disassembly, extrapolate.
+                            # This only matters near the bottom.
+                            assert line2.line_num is not None
+                            line2_line = line_num_2to1[line2.line_num]
+                            line2_target = (line2_line[0] + (target - line2.line_num), 0)
+    
+                        # Adjust the branch target for scoring and three-way diffing.
+                        norm2, norm_branch2 = split_off_address(line2.normalized_original)
+                        if norm_branch2 != "<ignore>":
+                            retargetted = hex(line2_target[0]).replace("0x", "")
+                            if line2_target[1] != 0:
+                                retargetted += f"+{line2_target[1]}"
+                            line2.normalized_original = norm2 + retargetted
+                            sc_base, _ = split_off_address(line2.scorable_line)
+                            line2.scorable_line = sc_base + retargetted
+                        same_target = line2_target == (line1.branch_target, 0)
+                    else:
+                        # Do a naive comparison for non-branches (e.g. function calls).
+                        same_target = address1 == address2
+    
+                    if normalize_imms(branchless1, arch) == normalize_imms(
                         branchless2, arch
                     ):
-                        # only stack differences (luckily stack and imm
-                        # differences can't be combined in MIPS, so we
-                        # don't have to think about that case)
-                        sym_color = BasicFormat.STACK
-                        line_prefix = "s"
-                    else:
-                        # reg differences and maybe imm as well
-                        out1, out2 = format_fields(arch.re_reg, out1, out2, sc1, sc2)
-                        cats = config.reg_categories
-                        if cats and any(
-                            cats.get(of.group()) != cats.get(nf.group())
-                            for (of, nf) in zip(
-                                out1.finditer(arch.re_reg), out2.finditer(arch.re_reg)
-                            )
+                        (
+                            stack_penalties,
+                            regalloc_penalties,
+                            has_symbol_mismatch,
+                        ) = diff_sameline(line1, line2, config, symbol_map)
+    
+                        if (
+                            regalloc_penalties == 0
+                            and stack_penalties == 0
+                            and not has_symbol_mismatch
                         ):
-                            sym_color = BasicFormat.REGISTER_CATEGORY
-                            line_prefix = "R"
-                        else:
-                            sym_color = BasicFormat.REGISTER
-                            line_prefix = "r"
-                        line_color1 = line_color2 = sym_color
-
-                if same_target:
-                    address_imm_fmt = BasicFormat.NONE
-                else:
-                    address_imm_fmt = BasicFormat.IMMEDIATE
-                out1 += Text(address1, address_imm_fmt)
-                out2 += Text(address2, address_imm_fmt)
-        elif line1 and line2:
-            line_prefix = "|"
-            line_color1 = line_color2 = sym_color = BasicFormat.DIFF_CHANGE
-            out1 = out1.reformat(line_color1)
-            out2 = out2.reformat(line_color2)
-        elif line1:
-            line_prefix = "<"
-            line_color1 = sym_color = BasicFormat.DIFF_REMOVE
-            out1 = out1.reformat(line_color1)
-            out2 = Text()
-        elif line2:
-            line_prefix = ">"
-            line_color2 = sym_color = BasicFormat.DIFF_ADD
-            out1 = Text()
-            out2 = out2.reformat(line_color2)
-
-        if config.show_source and line2 and line2.comment:
-            out2 += f" {line2.comment}"
-
-        def format_part(
-            out: Text,
-            line: Optional[Line],
-            line_color: Format,
-            btset: Set[int],
-            sc: FormatFunction,
-        ) -> Optional[Text]:
-            if line is None:
-                return None
-            if line.line_num is None:
-                return out
-            in_arrow = Text("  ")
-            out_arrow = Text()
-            if config.show_branches:
-                if line.line_num in btset:
-                    in_arrow = Text("~>", sc(str(line.line_num)))
-                if line.branch_target is not None:
-                    out_arrow = " " + Text("~>", sc(str(line.branch_target)))
-            formatted_line_num = Text(hex(line.line_num)[2:] + ":", line_color)
-            return formatted_line_num + " " + in_arrow + " " + out + out_arrow
-
-        part1 = format_part(out1, line1, line_color1, bts1, sc5)
-        part2 = format_part(out2, line2, line_color2, bts2, sc6)
-
-        if config.show_source and line2:
-            for source_line in line2.source_lines:
-                line_format = BasicFormat.SOURCE_OTHER
-                if config.source_old_binutils:
-                    if source_line and re.fullmatch(".*\.c(?:pp)?:\d+", source_line):
-                        line_format = BasicFormat.SOURCE_FILENAME
-                    elif source_line and source_line.endswith("():"):
-                        line_format = BasicFormat.SOURCE_FUNCTION
-                        try:
-                            source_line = cxxfilt.demangle(
-                                source_line[:-3], external_only=False
-                            )
-                        except:
+                            # ignore differences due to %lo(.rodata + ...) vs symbol
+                            out1 = out1.reformat(BasicFormat.NONE)
+                            out2 = out2.reformat(BasicFormat.NONE)
+                        elif line2.branch_target is not None and same_target:
+                            # same-target branch, don't color
                             pass
-                else:
-                    # File names and function names
-                    if source_line and source_line[0] != "│":
-                        line_format = BasicFormat.SOURCE_FILENAME
-                        # Function names
-                        if source_line.endswith("():"):
+                        else:
+                            # must have an imm difference (or else we would have hit the
+                            # fast path)
+                            sym_color = BasicFormat.IMMEDIATE
+                            line_prefix = "i"
+                    else:
+                        out1, out2 = format_fields(arch.re_sprel, out1, out2, sc3, sc4)
+                        if normalize_stack(branchless1, arch) == normalize_stack(
+                            branchless2, arch
+                        ):
+                            # only stack differences (luckily stack and imm
+                            # differences can't be combined in MIPS, so we
+                            # don't have to think about that case)
+                            sym_color = BasicFormat.STACK
+                            line_prefix = "s"
+                        else:
+                            # reg differences and maybe imm as well
+                            out1, out2 = format_fields(arch.re_reg, out1, out2, sc1, sc2)
+                            cats = config.reg_categories
+                            if cats and any(
+                                cats.get(of.group()) != cats.get(nf.group())
+                                for (of, nf) in zip(
+                                    out1.finditer(arch.re_reg), out2.finditer(arch.re_reg)
+                                )
+                            ):
+                                sym_color = BasicFormat.REGISTER_CATEGORY
+                                line_prefix = "R"
+                            else:
+                                sym_color = BasicFormat.REGISTER
+                                line_prefix = "r"
+                            line_color1 = line_color2 = sym_color
+    
+                    if same_target:
+                        address_imm_fmt = BasicFormat.NONE
+                    else:
+                        address_imm_fmt = BasicFormat.IMMEDIATE
+                    out1 += Text(address1, address_imm_fmt)
+                    out2 += Text(address2, address_imm_fmt)
+            elif line1 and line2:
+                line_prefix = "|"
+                line_color1 = line_color2 = sym_color = BasicFormat.DIFF_CHANGE
+                out1 = out1.reformat(line_color1)
+                out2 = out2.reformat(line_color2)
+            elif line1:
+                line_prefix = "<"
+                line_color1 = sym_color = BasicFormat.DIFF_REMOVE
+                out1 = out1.reformat(line_color1)
+                out2 = Text()
+            elif line2:
+                line_prefix = ">"
+                line_color2 = sym_color = BasicFormat.DIFF_ADD
+                out1 = Text()
+                out2 = out2.reformat(line_color2)
+    
+            if config.show_source and line2 and line2.comment:
+                out2 += f" {line2.comment}"
+    
+            def format_part(
+                out: Text,
+                line: Optional[Line],
+                line_color: Format,
+                btset: Set[int],
+                sc: FormatFunction,
+            ) -> Optional[Text]:
+                if line is None:
+                    return None
+                if line.line_num is None:
+                    return out
+                in_arrow = Text("  ")
+                out_arrow = Text()
+                if config.show_branches:
+                    if line.line_num in btset:
+                        in_arrow = Text("~>", sc(str(line.line_num)))
+                    if line.branch_target is not None:
+                        out_arrow = " " + Text("~>", sc(str(line.branch_target)))
+                formatted_line_num = Text(hex(line.line_num)[2:] + ":", line_color)
+                return formatted_line_num + " " + in_arrow + " " + out + out_arrow
+    
+            part1 = format_part(out1, line1, line_color1, bts1, sc5)
+            part2 = format_part(out2, line2, line_color2, bts2, sc6)
+    
+            if config.show_source and line2:
+                for source_line in line2.source_lines:
+                    line_format = BasicFormat.SOURCE_OTHER
+                    if config.source_old_binutils:
+                        if source_line and re.fullmatch(".*\.c(?:pp)?:\d+", source_line):
+                            line_format = BasicFormat.SOURCE_FILENAME
+                        elif source_line and source_line.endswith("():"):
                             line_format = BasicFormat.SOURCE_FUNCTION
                             try:
                                 source_line = cxxfilt.demangle(
@@ -3113,54 +3247,67 @@ def do_diff(lines1: List[Line], lines2: List[Line], config: Config) -> Diff:
                                 )
                             except:
                                 pass
-                padding = " " * 7 if config.show_line_numbers else " " * 2
-                output.append(
-                    OutputLine(
-                        base=None,
-                        fmt2=padding + Text(source_line, line_format),
-                        key2=source_line,
-                        boring=True,
-                        is_data_ref=False,
-                        line1=None,
-                        line2=None,
+                    else:
+                        # File names and function names
+                        if source_line and source_line[0] != "│":
+                            line_format = BasicFormat.SOURCE_FILENAME
+                            # Function names
+                            if source_line.endswith("():"):
+                                line_format = BasicFormat.SOURCE_FUNCTION
+                                try:
+                                    source_line = cxxfilt.demangle(
+                                        source_line[:-3], external_only=False
+                                    )
+                                except:
+                                    pass
+                    padding = " " * 7 if config.show_line_numbers else " " * 2
+                    output.append(
+                        OutputLine(
+                            base=None,
+                            fmt2=padding + Text(source_line, line_format),
+                            key2=source_line,
+                            boring=True,
+                            is_data_ref=False,
+                            line1=None,
+                            line2=None,
+                        )
                     )
-                )
-
-        key2 = line2.normalized_original if line2 else None
-        boring = False
-        if line_prefix == " ":
-            boring = True
-        elif config.compress and config.compress.same_instr and line_prefix in "irs":
-            boring = True
-
-        if config.show_line_numbers:
-            if line2 and line2.source_line_num is not None:
-                num_color = (
-                    BasicFormat.SOURCE_LINE_NUM
-                    if sym_color == BasicFormat.NONE
-                    else sym_color
-                )
-                num2 = Text(f"{line2.source_line_num:5}", num_color)
+    
+            key2 = line2.normalized_original if line2 else None
+            boring = False
+            if line_prefix == " ":
+                boring = True
+            elif config.compress and config.compress.same_instr and line_prefix in "irs":
+                boring = True
+    
+            if config.show_line_numbers:
+                if line2 and line2.source_line_num is not None:
+                    num_color = (
+                        BasicFormat.SOURCE_LINE_NUM
+                        if sym_color == BasicFormat.NONE
+                        else sym_color
+                    )
+                    num2 = Text(f"{line2.source_line_num:5}", num_color)
+                else:
+                    num2 = Text(" " * 5)
             else:
-                num2 = Text(" " * 5)
-        else:
-            num2 = Text()
-
-        fmt2 = Text(line_prefix, sym_color) + num2 + " " + (part2 or Text())
-
-        output.append(
-            OutputLine(
-                base=part1,
-                fmt2=fmt2,
-                key2=key2,
-                boring=boring,
-                is_data_ref=is_data_ref,
-                line1=line1,
-                line2=line2,
+                num2 = Text()
+    
+            fmt2 = Text(line_prefix, sym_color) + num2 + " " + (part2 or Text())
+    
+            output.append(
+                OutputLine(
+                    base=part1,
+                    fmt2=fmt2,
+                    key2=key2,
+                    boring=boring,
+                    is_data_ref=is_data_ref,
+                    line1=line1,
+                    line2=line2,
+                )
             )
-        )
 
-    output = output[config.skip_lines :]
+        output = output[config.skip_lines :]
 
     score = score_diff_lines(diffed_lines, config, symbol_map)
     max_score = len(lines1) * config.penalty_deletion
@@ -3388,8 +3535,7 @@ def debounced_fs_watch(
 
     th = threading.Thread(target=debounce_thread, daemon=True)
     th.start()
-
-
+ 
 class Display:
     basedump: str
     mydump: str
@@ -3410,9 +3556,12 @@ class Display:
         self.last_refresh_key = None
         self.last_diff_output = None
 
-    def run_diff(self) -> Tuple[str, object]:
+    def run_diff(self, new_mydump: Optional[str]) -> Tuple[str, object]:
         if self.emsg is not None:
             return (self.emsg, self.emsg)
+
+        if new_mydump is not None:
+            self.mydump = new_mydump
 
         my_lines = process(self.mydump, self.config)
 
@@ -3527,11 +3676,242 @@ class Display:
         self.ready_queue.get()
 
 
+#
+#DECOMP_DIFF_RESULTS_DATA_TEMPLATE = {
+#    "processed": {"key": True},
+#    "scores": {
+#        "combined_key": 0
+#    }
+#}
+
+ID_SHORTHANDS = "!^"
+
+def read_in_key_value_file(filename):
+    with open(filename, "r") as f:
+        #lines = f.read.splitlines()
+        dict_obj = {(split_line := line.rstrip("\n").split("|", maxsplit=1))[0]: int(split_line[1]) for line in f}
+        return dict_obj
+
+def write_key_value_file(filename, data):
+    output = "".join([f"{key}|{value}\n" for key, value in data.items()])
+    with open(filename, "w+") as f:
+        f.write(output)
+
+class DecompDiffResults:
+    __slots__ = ("info_filename", "scores_filename", "processed", "scores", "cur_processed_output", "cur_score_output")
+
+    def __init__(self, info_filename, scores_filename):
+        if pathlib.Path(info_filename).is_file():
+            self.processed = read_in_key_value_file(info_filename)
+        else:
+            pathlib.Path(info_filename).touch()
+            self.processed = {}
+
+        if pathlib.Path(scores_filename).is_file():
+            self.scores = read_in_key_value_file(scores_filename)
+        else:
+            pathlib.Path(scores_filename).touch()
+            self.scores = {}
+
+        self.cur_processed_output = []
+        self.cur_score_output = []
+        self.info_filename = info_filename
+        self.scores_filename = scores_filename
+
+    def get_combined_function_key(self, decomposed_function_1, decomposed_function_2):
+        key_1 = decomposed_function_1.key
+        key_2 = decomposed_function_2.key
+        if key_1 < key_2:
+            combined_key = f"{key_1};{key_2}"
+        else:
+            combined_key = f"{key_2};{key_1}"
+
+        return combined_key
+
+    def is_function_processed(self, decomposed_function):
+        return decomposed_function.key in self.processed
+
+    def set_function_processed(self, decomposed_function):
+        self.processed[decomposed_function.key] = 1
+        self.cur_processed_output.append(f"{decomposed_function.key}|1\n")
+
+    def add_score(self, combined_key, score):
+        self.scores[combined_key] = score
+        self.cur_score_output.append(f"{combined_key}|{score}\n")
+
+    def get_functions_score(self, decomposed_function_1, decomposed_function_2):
+        combined_key = self.get_combined_function_key(decomposed_function_1, decomposed_function_2)
+        functions_score = self.scores.get(combined_key)
+        if functions_score is None:
+            return -1
+
+        return functions_score
+
+    def set_functions_score(self, decomposed_function_1, decomposed_function_2, score):
+        combined_key = self.get_combined_function_key(decomposed_function_1, decomposed_function_2)
+        self.add_score(combined_key, score)
+
+    def set_function_as_processed_and_save(self, decomposed_function):
+        self.set_function_processed(decomposed_function)
+
+        with open(self.info_filename, "a") as f:
+            f.write("".join(self.cur_processed_output))
+
+        with open(self.scores_filename, "a") as f:
+            f.write("".join(self.cur_score_output))
+
+        self.cur_processed_output.clear()
+        self.cur_score_output.clear()
+
+class DecomposedFunction:
+    __slots__ = ("name", "symbol", "contents", "deadstripped", "overlay", "addr", "short_id", "key", "processed_lines")
+
+    def __init__(self, name, symbol, contents, deadstripped, short_id, processed_lines):
+        self.name = name
+        self.symbol = symbol
+        self.contents = contents
+        self.deadstripped = deadstripped
+        self.overlay = symbol.full_addr.overlay
+        self.addr = symbol.full_addr.addr
+        self.short_id = short_id
+        self.key = self.get_key()
+        if processed_lines is not None:
+            self.processed_lines = [Line.unserialize(processed_line) for processed_line in processed_lines]
+        else:
+            self.processed_lines = processed_lines
+
+    def gen_processed_lines(self, config):
+        if self.processed_lines is None:
+            self.processed_lines = process(self.contents, config)
+
+        return self
+
+    @classmethod
+    def unserialize(cls, serialized_input, short_id):
+        #print(f"DecomposedFunction serialized_input: {serialized_input}")
+        #print(f"Unserialized {serialized_input['name']} in {id}")
+
+        return cls(serialized_input["name"], Symbol.unserialize(serialized_input["symbol"]), serialized_input["contents"], serialized_input["deadstripped"], short_id, serialized_input.get("processed_lines"))
+
+    def get_key(self):
+        if self.deadstripped:
+            return f"{self.short_id}.{self.symbol.filename}.{self.name}"
+        else:
+            return f"{self.short_id}.{self.symbol.full_addr}"
+            # deadstripped funcs have no addr, so have to rely on obj name and symbol
+
+    def serialize(self):
+        serialized_processed_lines = [processed_line.serialize() for processed_line in self.processed_lines]
+        #print(f"serialized_processed_lines: {serialized_processed_lines}")
+
+        return {
+            "name": self.name,
+            "symbol": self.symbol.serialize(),
+            "contents": self.contents,
+            "deadstripped": self.deadstripped,
+            "processed_lines": serialized_processed_lines
+        }
+
+class DecompDB:
+    __slots__ = ("id", "short_id", "contents")
+
+    def __init__(self, id, contents):
+        self.id = id
+        self.short_id = self.id[0]
+        self.contents = contents
+
+    @classmethod
+    def unserialize(cls, decomp_db_dict, config):
+        decomp_db_id = decomp_db_dict["id"]
+        decomp_db_short_id = decomp_db_id[0]
+
+        unserialized_decomp_db_contents = [DecomposedFunction.unserialize(decomposed_function, decomp_db_short_id).gen_processed_lines(config) for decomposed_function in decomp_db_dict["contents"]]
+        return cls(decomp_db_id, unserialized_decomp_db_contents)
+
+    def serialize(self):
+        return {"id": self.id, "contents": [decomposed_function.serialize() for decomposed_function in self.contents]}
+
+    def serialize_pickle(self, filename):
+        with open(filename, "wb+") as f:
+            pickle.dump(self, f, protocol=pickle.HIGHEST_PROTOCOL)
+
+def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_results_info_filename, decomp_diff_results_scores_filename, config):
+    decomp_db_1_pickle_filepath = pathlib.Path(decomp_db_1_filename).with_suffix(".pickle")
+    decomp_db_2_pickle_filepath = pathlib.Path(decomp_db_2_filename).with_suffix(".pickle")
+
+    if decomp_db_1_pickle_filepath.is_file():
+        with open(decomp_db_1_pickle_filepath, "rb") as f:
+            decomp_db_1 = pickle.load(f)
+    else:
+        with open(decomp_db_1_filename, "r") as f:
+            decomp_db_1 = json.load(f)
+        decomp_db_1 = DecompDB.unserialize(decomp_db_1, config)
+        decomp_db_1.serialize_pickle(decomp_db_1_pickle_filepath)
+
+    if decomp_db_2_pickle_filepath.is_file():
+        with open(decomp_db_2_pickle_filepath, "rb") as f:
+            decomp_db_2 = pickle.load(f)
+    else:
+        with open(decomp_db_2_filename, "r") as f:
+            decomp_db_2 = json.load(f)
+        decomp_db_2 = DecompDB.unserialize(decomp_db_2, config)
+        decomp_db_2.serialize_pickle(decomp_db_2_pickle_filepath)
+
+    #with open(decomp_db_1_filename, "w+") as f:
+    #    serialized_decomp_db_1 = decomp_db_1.serialize()
+    #
+    #    print(f"decomp_db_1.serialize(): {serialized_decomp_db_1}")
+    #
+    #    json.dump(decomp_db_1.serialize(), f, separators=(',', ':'))
+    #
+    #with open(decomp_db_2_filename, "w+") as f:
+    #    json.dump(decomp_db_2.serialize(), f, separators=(',', ':'))
+
+    # keep things unordered
+
+    if decomp_db_1.id >= decomp_db_2.id:
+        decomp_db_1, decomp_db_2 = decomp_db_2, decomp_db_1
+
+    decomp_diff_results = DecompDiffResults(decomp_diff_results_info_filename, decomp_diff_results_scores_filename)
+
+    decomp_db_1_contents = decomp_db_1.contents
+    decomp_db_2_contents = decomp_db_2.contents
+    #decomp_db_1_contents_start_index_1 = decomp_db_1_contents[1:]
+    decomp_db_2_contents_start_index_1 = decomp_db_2_contents[1:]
+
+    #for decomposed_function_1 in decomp_db_1_contents:
+    #    decomp_diff_results.add_function_if_not_exist(decomposed_function_1)
+    #
+    #for decomposed_function_2 in decomp_db_2_contents:
+    #    decomp_diff_results.add_function_if_not_exist(decomposed_function_2)
+
+    for decomposed_function_1 in decomp_db_1_contents:
+        if decomp_diff_results.is_function_processed(decomposed_function_1):
+            print(f"Skipping already processed function {decomposed_function_1.name}!")
+            continue
+        print(f"Processing {decomposed_function_1.name} from {decomp_db_1.id}!")
+
+        decomposed_function_1_processed_lines = decomposed_function_1.processed_lines
+
+        for decomposed_function_2 in decomp_db_2_contents:
+            score = decomp_diff_results.get_functions_score(decomposed_function_1, decomposed_function_2)
+            if score != -1:
+                continue
+
+            if len(decomposed_function_1.processed_lines) != len(decomposed_function_2.processed_lines):
+                continue
+
+            #print(f"Processing {decomposed_function_2.name} from {decomp_db_2.id}!")
+            diff_output = do_diff(decomposed_function_1_processed_lines, decomposed_function_2.processed_lines, config)
+            decomp_diff_results.set_functions_score(decomposed_function_1, decomposed_function_2, diff_output.score)
+
+        decomp_diff_results.set_function_as_processed_and_save(decomposed_function_1)
+
 def main() -> None:
     args = parser.parse_args()
 
     # Apply project-specific configuration.
-    settings: Dict[str, Any] = {}
+    settings: Dict[str, Any] = {"objdump_executable": "arm-none-eabi-objdump", "arch": "arm32"}
     diff_settings.apply(settings, args)  # type: ignore
     project = create_project_settings(settings)
 
@@ -3558,41 +3938,59 @@ def main() -> None:
     ):
         fail("Threeway diffing requires -w.")
 
-    if args.diff_elf_symbol:
-        make_target, basecmd, mycmd = dump_elf(
-            args.start, args.end, args.diff_elf_symbol, config, project
-        )
-    elif config.diff_obj:
-        make_target, basecmd, mycmd = dump_objfile(
-            args.start, args.end, config, project
-        )
-    else:
-        make_target, basecmd, mycmd = dump_binary(args.start, args.end, config, project)
-
-    map_build_target_fn = getattr(diff_settings, "map_build_target", None)
-    if map_build_target_fn:
-        make_target = map_build_target_fn(make_target=make_target)
-
-    if args.write_asm is not None:
-        mydump = run_objdump(mycmd, config, project)
-        with open(args.write_asm, "w") as f:
-            f.write(mydump)
-        print(f"Wrote assembly to {args.write_asm}.")
-        sys.exit(0)
-
-    if args.base_asm is not None:
+    if args.compare_asm:
         with open(args.base_asm) as f:
             basedump = f.read()
-    elif config.diff_mode != DiffMode.SINGLE:
-        basedump = run_objdump(basecmd, config, project)
-    else:
-        basedump = ""
 
-    mydump = run_objdump(mycmd, config, project)
+        with open(args.compare_asm) as f:
+            mydump = f.read()
+    elif args.decomp_diff_1 is not None and args.decomp_diff_2 is not None and args.decomp_diff_results_info is not None:
+        do_decomp_diff(args.decomp_diff_1, args.decomp_diff_2, args.decomp_diff_results_info, args.decomp_diff_results_scores, config)
+        sys.exit(0)
+    else:
+        if args.ds_test:
+            make_target = None
+            basecmd = None
+            mycmd = ([], args.objfile, None)
+        elif args.diff_elf_symbol:
+            make_target, basecmd, mycmd = dump_elf(
+                args.start, args.end, args.diff_elf_symbol, config, project
+            )
+        elif config.diff_obj:
+            make_target, basecmd, mycmd = dump_objfile(
+                args.start, args.end, config, project
+            )
+        else:
+            make_target, basecmd, mycmd = dump_binary(args.start, args.end, config, project)
+    
+        map_build_target_fn = getattr(diff_settings, "map_build_target", None)
+        if map_build_target_fn:
+            make_target = map_build_target_fn(make_target=make_target)
+
+        if args.write_asm is not None or args.print_asm:
+            mydump = run_objdump(mycmd, config, project, ds_test=args.ds_test)
+            if args.print_asm:
+                print(mydump)
+            else:
+                with open(args.write_asm, "w") as f:
+                    f.write(mydump)
+                print(f"Wrote assembly to {args.write_asm}.")
+            sys.exit(0)
+    
+        if args.base_asm is not None:
+            with open(args.base_asm) as f:
+                basedump = f.read()
+        elif config.diff_mode != DiffMode.SINGLE:
+            basedump = run_objdump(basecmd, config, project)
+        else:
+            basedump = ""
+        mydump = run_objdump(mycmd, config, project)
 
     display = Display(basedump, mydump, config)
 
-    if args.no_pager or args.format in ("html", "json"):
+    if args.score_only:
+        print(f"score: {display.run_diff()[1][1]}")
+    elif args.no_pager or args.format in ("html", "json"):
         print(display.run_diff()[0])
     elif not args.watch:
         display.run_sync()
