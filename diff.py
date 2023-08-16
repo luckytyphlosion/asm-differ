@@ -3023,15 +3023,15 @@ def diff_sameline(
                 if check_for_symbol_mismatch(old_line, new_line, symbol_map):
                     has_symbol_mismatch = True
                 continue
-            print(f"regalloc penalty in nf: {nf}, of: {of}")
+            #print(f"regalloc penalty in nf: {nf}, of: {of}")
             num_regalloc_penalties += 1
 
     # Penalize any extra fields
     
     num_regalloc_penalties += abs(len(newfields) - len(oldfields))
 
-    if num_regalloc_penalties != 0:
-        print(f"final regalloc penalty: newfields: {newfields}, oldfields: {oldfields}")
+    #if num_regalloc_penalties != 0:
+    #    print(f"final regalloc penalty: newfields: {newfields}, oldfields: {oldfields}")
 
     return (num_stack_penalties, num_regalloc_penalties, has_symbol_mismatch)
 
@@ -3054,11 +3054,11 @@ def score_diff_lines(
     def diff_insert(line: str) -> None:
         # Reordering or totally different codegen.
         # Defer this until later when we can tell.
-        print(f"diff_insert occurred: {line}")
+        #print(f"diff_insert occurred: {line}")
         insertions.append(line)
 
     def diff_delete(line: str) -> None:
-        print(f"diff_delete occurred: {line}")
+        #print(f"diff_delete occurred: {line}")
         deletions.append(line)
 
     # Find the end of the last long streak of matching mnemonics, if it looks
@@ -3083,8 +3083,8 @@ def score_diff_lines(
             break
         if line1 and line2 and line1.mnemonic == line2.mnemonic:
             sp, rp, _ = diff_sameline(line1, line2, config, symbol_map)
-            if sp != 0 or rp != 0:
-                print(f"stack/regalloc diff occurred: sp: {sp}, rp: {rp}, line1: {line1}, line2: {line2}")
+            #if sp != 0 or rp != 0:
+                #print(f"stack/regalloc diff occurred: sp: {sp}, rp: {rp}, line1: {line1}, line2: {line2}")
 
             num_stack_penalties += sp
             num_regalloc_penalties += rp
@@ -3987,7 +3987,7 @@ def read_in_decomp_dbs(config, *decomp_db_filenames):
 
     return decomp_dbs
 
-MAX_UNIQUE_SCORES = 10
+MAX_UNIQUE_SCORES = 15
 
 SCORE_SCALE = 1000
 
@@ -4008,7 +4008,6 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
     #    json.dump(decomp_db_2.serialize(), f, separators=(',', ':'))
 
     # keep things unordered
-    raise RuntimeError()
 
     if decomp_db_1.id >= decomp_db_2.id:
         decomp_db_1, decomp_db_2 = decomp_db_2, decomp_db_1
@@ -4034,7 +4033,7 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
             if decomposed_function_1_overlay != -1:
                 break
 
-            if not (decomposed_function_1_addr >= 0x2005000):
+            if not (decomposed_function_1_addr >= 0x2050000):
                 continue
 
             print(f"Processing {decomposed_function_1.name} from {decomp_db_1.id}!")
@@ -4061,8 +4060,8 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
                 # only compare static overlay with static overlay
                 if decomposed_function_1_overlay * decomposed_function_2_overlay != 1:
                     continue
-                elif abs(decomposed_function_1_addr - decomposed_function_2_addr) >= 0x20000:
-                    continue
+                #elif abs(decomposed_function_1_addr - decomposed_function_2_addr) >= 0x10000:
+                #    continue
 
                 line_count_diff = abs(decomposed_function_1_num_processed_lines - len(decomposed_function_2.processed_lines))
     
@@ -4106,7 +4105,7 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
             decomp_diff_results.set_function_processed(decomposed_function_1)
 
             decomposed_function_1_count += 1
-            if decomposed_function_1_count >= 1000:
+            if decomposed_function_1_count >= 200:
                 break
 
     except KeyboardInterrupt as e:
