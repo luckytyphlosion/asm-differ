@@ -50,6 +50,9 @@ class NonzeroScoreTracker:
                     self.last_entry_score = max(scores_for_hgss_symbol.keys())
                     #print(f"set last_entry_score: {self.last_entry_score}, scores_for_hgss_symbol.keys(): {tuple(scores_for_hgss_symbol.keys())}")
 
+    def has_addr(self, hgss_full_addr):
+        return hgss_full_addr in self.score_table
+
 def diff_line_to_table_line(line):
     cells = [
         (line[0].base or Text(), line[0].line1),
@@ -175,7 +178,9 @@ def main():
     print("Going over scores!")
     nonzero_score_tracker = NonzeroScoreTracker()
 
-    for i, (score_function_names, score) in enumerate(scores.items()):
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1])
+
+    for i, (score_function_names, score) in enumerate(sorted_scores):
         hgss_function_key, retsam_function_key = score_function_names.split(";", maxsplit=1)
         hgss_symbol = hgss_decomposed_functions_by_key[hgss_function_key].symbol
         if hgss_symbol.full_addr.addr == -1:
@@ -190,14 +195,14 @@ def main():
 
         if score == 0:
             hgss_to_retsam_zero_scores[hgss_symbol.full_addr].append(PlatAndRetsamSymbol(plat_symbol, retsam_symbol))
-        else:
+        elif not hgss_symbol.full_addr in hgss_to_retsam_zero_scores:
             nonzero_score_tracker.add(hgss_symbol, plat_symbol, retsam_symbol, score)
 
         if i & 0xffff == 0:
             print(f"i: {i}")
 
-        if i > 10000000:
-            break
+        #if i > 10000000:
+        #    break
 
     asm_output = []
     src_output = []
@@ -213,7 +218,7 @@ def main():
             if plat_symbol is not None:
                 plat_and_retsam_symbol_names_and_addrs.append(f"  {plat_symbol.name}, {retsam_symbol.name} [{retsam_symbol.full_addr}]\n")
             else:
-                plat_and_retsam_symbol_names_and_addrs.append(f"  {retsam_symbol.name}\n")
+                plat_and_retsam_symbol_names_and_addrs.append(f"  {retsam_symbol.name} ({retsam_symbol.filename})\n")
             if i >= 4:
                 plat_and_retsam_symbol_names_and_addrs.append(f"  <{len(corresponding_plat_and_retsam_symbols) - 5} functions remaining>\n")
                 break
@@ -236,7 +241,7 @@ def main():
         cur_output = ""
         cur_output += f"{hgss_symbol.name} ({hgss_full_addr}):\n"
 
-        for score, corresponding_plat_and_retsam_symbols in sorted(scores_for_hgss_symbol.items(), key=lambda x: x[0]):
+        for score, corresponding_plat_and_retsam_symbols in sorted(scores_for_hgss_symbol.items(), key=lambda x: x[0])[:5]:
             cur_output += f"  Score: {score}\n"
 
             plat_and_retsam_symbol_names_and_addrs = []
@@ -248,7 +253,7 @@ def main():
                 if plat_symbol is not None:
                     plat_and_retsam_symbol_names_and_addrs.append(f"    {plat_symbol.name}, {retsam_symbol.name} [{retsam_symbol.full_addr}]\n")
                 else:
-                    plat_and_retsam_symbol_names_and_addrs.append(f"    {retsam_symbol.name}\n")
+                    plat_and_retsam_symbol_names_and_addrs.append(f"    {retsam_symbol.name} ({retsam_symbol.filename})\n")
                 if i >= 4:
                     plat_and_retsam_symbol_names_and_addrs.append(f"    <{len(corresponding_plat_and_retsam_symbols) - 5} functions remaining>\n")
                     break

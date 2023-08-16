@@ -10,6 +10,7 @@ import pickle
 import key_int
 import rapidfuzz
 import numpy as np
+import time
 
 from xmap import Symbol
 
@@ -188,9 +189,10 @@ if __name__ == "__main__":
         metavar="FILE",
     )
     parser.add_argument(
-        "--mnemonic-list",
-        dest="mnemonic_list",
-        metavar="FILE"
+        "--decomp-diff-num-iterations",
+        dest="decomp_diff_num_iterations",
+        type=int,
+        default=2**30
     )
     parser.add_argument(
         "-c",
@@ -1215,6 +1217,9 @@ def run_objdump(cmd: ObjdumpCommand, config: Config, project: ProjectSettings, d
     return preprocess_objdump_out(restrict, obj_data, out, config, ds_test)
 
 
+SHORT_0x0000 = ".short\t0x0000"
+LEN_SHORT_0x0000 = len(".short\t0x0000")
+
 def preprocess_objdump_out(
     restrict: Optional[str], obj_data: Optional[bytes], objdump_out: str, config: Config, ds_test=None
 ) -> str:
@@ -1238,6 +1243,8 @@ def preprocess_objdump_out(
         for i in range(strip_start_line):
             out = out[out.find("\n") + 1 :]
         out = out.rstrip("\n")
+        #if out.endswith(SHORT_0x0000):
+        #    out = out[:-LEN_SHORT_0x0000]
 
     if obj_data and config.show_rodata_refs:
         out = (
@@ -3859,6 +3866,11 @@ class DecomposedFunction:
     def __init__(self, name, symbol, contents, deadstripped, short_id, processed_lines=None, processed_lines_heuristic_compare_str=None, unordered_fuzzy_summary=None, ordered_fuzzy_summary=None):
         self.name = name
         self.symbol = symbol
+        if contents.endswith(SHORT_0x0000):
+            old_contents = contents
+            contents = contents.rsplit("\n", maxsplit=1)[0]
+            #print(f"stripped short, old: {old_contents}\nnew: {contents}")
+
         self.contents = contents
         self.deadstripped = deadstripped
         self.short_id = short_id
@@ -3987,11 +3999,11 @@ def read_in_decomp_dbs(config, *decomp_db_filenames):
 
     return decomp_dbs
 
-MAX_UNIQUE_SCORES = 15
+MAX_UNIQUE_SCORES = 8
 
 SCORE_SCALE = 1000
 
-def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_results_info_filename, decomp_diff_results_scores_filename, mnemonic_list, config):
+def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_results_info_filename, decomp_diff_results_scores_filename, decomp_diff_num_iterations, config):
     decomp_db_1, decomp_db_2 = read_in_decomp_dbs(config, decomp_db_1_filename, decomp_db_2_filename)
 
     #with open("all_mnemonics.dump", "w+") as f:
@@ -4017,7 +4029,10 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
     decomp_db_1_contents = decomp_db_1.contents
     decomp_db_2_contents = decomp_db_2.contents
 
-    unordered_ordered_heuristic_output = []
+    #unordered_ordered_heuristic_output = []
+
+    start_time = time.time()
+    processed_functions_info = []
 
     try:
         decomposed_function_1_count = 0
@@ -4030,13 +4045,17 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
             decomposed_function_1_overlay = decomposed_function_1.symbol.full_addr.overlay
             decomposed_function_1_addr = decomposed_function_1.symbol.full_addr.addr
 
-            if decomposed_function_1_overlay != -1:
-                break
+            #if decomposed_function_1_overlay == -1:
+            #    continue
 
-            if not (decomposed_function_1_addr >= 0x2050000):
-                continue
+            #if decomposed_function_1_overlay != -1:
+            #    break
 
-            print(f"Processing {decomposed_function_1.name} from {decomp_db_1.id}!")
+            #if not (decomposed_function_1_addr >= 0x2050000):
+            #    continue
+
+            
+            processed_functions_info.append(f"Processing {decomposed_function_1.name} from {decomp_db_1.id}!")
     
             decomposed_function_1_processed_lines = decomposed_function_1.processed_lines
     
@@ -4044,9 +4063,9 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
 
             n_lowest_scores = set()
             greatest_n_lowest_score = None
-            unordered_ordered_heuristic_output.append(f"\n== {decomposed_function_1.name} ==\n")
+            #unordered_ordered_heuristic_output.append(f"\n== {decomposed_function_1.name} ==\n")
 
-            unordered_ordered_heuristic_cur_output = []
+            #unordered_ordered_heuristic_cur_output = []
             decomposed_function_1_num_processed_lines = len(decomposed_function_1.processed_lines)
 
             for decomposed_function_2 in decomp_db_2_contents:
@@ -4058,13 +4077,39 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
                 decomposed_function_2_addr = decomposed_function_2.symbol.full_addr.addr
 
                 # only compare static overlay with static overlay
-                if decomposed_function_1_overlay * decomposed_function_2_overlay != 1:
-                    continue
+                if decomposed_function_1_overlay * decomposed_function_2_overlay <= 0:
+                    if decomposed_function_1_overlay == 0 or decomposed_function_2_overlay == 0:
+                        if decomposed_function_1_overlay == -1 or decomposed_function_2_overlay == -1:
+                            continue
+                    else:
+                        continue
+
                 #elif abs(decomposed_function_1_addr - decomposed_function_2_addr) >= 0x10000:
                 #    continue
+                decomposed_function_2_num_processed_lines = len(decomposed_function_2.processed_lines)
 
-                line_count_diff = abs(decomposed_function_1_num_processed_lines - len(decomposed_function_2.processed_lines))
-    
+                line_count_diff = abs(decomposed_function_1_num_processed_lines - decomposed_function_2_num_processed_lines)
+                min_line_count = min(decomposed_function_1_num_processed_lines, decomposed_function_2_num_processed_lines)
+
+                # abort if there are too many new lines
+                if line_count_diff > min_line_count * 2:
+                    continue
+
+                line_count_diff_percent_weight = (1 - line_count_diff / min_line_count) + 1
+                unordered_heuristic_score = decomposed_function_1.unordered_heuristic_compare(decomposed_function_2)
+                unordered_heuristic_score_scaled = unordered_heuristic_score * line_count_diff_percent_weight
+
+                # abort if the number of changed opcodes scaled by line_count_diff_percent_weight is greater than min line count with a cap at 20 
+                if unordered_heuristic_score_scaled > min(min_line_count, 20):
+                    ## making shit up here
+                    #if unordered_heuristic_score < 20:
+                    #    ordered_heuristic_score = decomposed_function_1.ordered_heuristic_compare(decomposed_function_2)
+                    #    ordered_heuristic_score_scaled = ordered_heuristic_score * line_count_diff_percent_weight
+                    #    if ordered_heuristic_score_scaled >= 30:
+                    #        continue
+                    #else:
+                    continue
+
                 #if len(decomposed_function_1.processed_lines) != len(decomposed_function_2.processed_lines):
                 #if abs(len(decomposed_function_1.processed_lines) - len(decomposed_function_2.processed_lines)) > 7:
                 #    continue
@@ -4073,39 +4118,52 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
                 score_relative, max_score = do_diff_score_only(decomposed_function_1_processed_lines, decomposed_function_2.processed_lines, config)
                 score = score_relative #round(score_relative/max_score * SCORE_SCALE)
 
-                if len(n_lowest_scores) >= MAX_UNIQUE_SCORES and score not in n_lowest_scores:
-                    if score < greatest_n_lowest_score:
-                        n_lowest_scores.remove(greatest_n_lowest_score)
-                        n_lowest_scores.add(score)
-                        greatest_n_lowest_score = max(n_lowest_scores)
-                        do_set_functions_score = True
+                score_to_reject = score#unordered_heuristic_score_scaled
+
+                if len(n_lowest_scores) >= MAX_UNIQUE_SCORES:
+                    if score_to_reject not in n_lowest_scores:
+                        #print(f"score_to_reject: {score_to_reject}, greatest_n_lowest_score: {greatest_n_lowest_score}")
+                        if score_to_reject < greatest_n_lowest_score:
+                            n_lowest_scores.remove(greatest_n_lowest_score)
+                            n_lowest_scores.add(score_to_reject)
+                            greatest_n_lowest_score = max(n_lowest_scores)
+                            do_set_functions_score = True
+                        else:
+                            do_set_functions_score = False
                     else:
-                        do_set_functions_score = False
+                        do_set_functions_score = True
                 else:
+                    n_lowest_scores.add(score_to_reject)
+                    if len(n_lowest_scores) == MAX_UNIQUE_SCORES:
+                        greatest_n_lowest_score = max(n_lowest_scores)
+
                     do_set_functions_score = True
 
                 if do_set_functions_score:
                     decomp_diff_results.set_functions_score(decomposed_function_1, decomposed_function_2, score)
-                    unordered_heuristic_score = decomposed_function_1.unordered_heuristic_compare(decomposed_function_2)
-                    ordered_heuristic_score = decomposed_function_1.ordered_heuristic_compare(decomposed_function_2)
-                    line_count_diff_percent_weight = (1 - line_count_diff / decomposed_function_1_num_processed_lines) + 1
+                    #unordered_heuristic_score = decomposed_function_1.unordered_heuristic_compare(decomposed_function_2)
+                    #ordered_heuristic_score = decomposed_function_1.ordered_heuristic_compare(decomposed_function_2)
+                    #line_count_diff_percent_weight = (1 - line_count_diff / decomposed_function_1_num_processed_lines) + 1
+                    #
+                    #unordered_heuristic_score_scaled = unordered_heuristic_score * line_count_diff_percent_weight
+                    #ordered_heuristic_score_scaled = ordered_heuristic_score * line_count_diff_percent_weight
 
-                    unordered_heuristic_score_scaled = unordered_heuristic_score * line_count_diff_percent_weight
-                    ordered_heuristic_score_scaled = ordered_heuristic_score * line_count_diff_percent_weight
-
-                    unordered_ordered_heuristic_cur_output.append((f"{decomposed_function_2.name}: unordered: {unordered_heuristic_score} ({unordered_heuristic_score_scaled:.2f}), ordered: {ordered_heuristic_score} ({ordered_heuristic_score_scaled:.2f}), asm: {score}\n", score))
+                    #unordered_ordered_heuristic_cur_output.append((f"{decomposed_function_2.name}: unordered: {unordered_heuristic_score} ({unordered_heuristic_score_scaled:.2f}), ordered: {ordered_heuristic_score} ({ordered_heuristic_score_scaled:.2f}), asm: {score}\n", score))
 
                 decomposed_function_2_count += 1
 
-            sorted_unordered_ordered_heuristic_cur_output = sorted(unordered_ordered_heuristic_cur_output, key=lambda x: x[1])[:10]
-            unordered_ordered_heuristic_output.extend((x[0] for x in sorted_unordered_ordered_heuristic_cur_output))
+            #sorted_unordered_ordered_heuristic_cur_output = sorted(unordered_ordered_heuristic_cur_output, key=lambda x: x[1])[:10]
+            #unordered_ordered_heuristic_output.extend((x[0] for x in sorted_unordered_ordered_heuristic_cur_output))
 
-            print(f"Processed {decomposed_function_2_count} functions.")
+            processed_functions_info.append(f"Processed {decomposed_function_2_count} functions.")
+            if len(processed_functions_info) >= 200:
+                print("\n".join(processed_functions_info))
+                processed_functions_info.clear()
 
             decomp_diff_results.set_function_processed(decomposed_function_1)
 
             decomposed_function_1_count += 1
-            if decomposed_function_1_count >= 200:
+            if decomposed_function_1_count >= decomp_diff_num_iterations:
                 break
 
     except KeyboardInterrupt as e:
@@ -4113,8 +4171,11 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
         decomp_diff_results.save()
         raise e
 
-    with open("unordered_ordered_heuristic_output.dump", "w+") as f:
-        f.write("".join(unordered_ordered_heuristic_output))
+    end_time = time.time()
+    print(f"processing time taken: {end_time - start_time}")
+
+    #with open("unordered_ordered_heuristic_output.dump", "w+") as f:
+    #    f.write("".join(unordered_ordered_heuristic_output))
 
     decomp_diff_results.save()
 
@@ -4158,7 +4219,7 @@ def main() -> None:
         with open(args.compare_asm) as f:
             mydump = f.read()
     elif args.decomp_diff_1 is not None and args.decomp_diff_2 is not None and args.decomp_diff_results_info is not None:
-        do_decomp_diff(args.decomp_diff_1, args.decomp_diff_2, args.decomp_diff_results_info, args.decomp_diff_results_scores, args.mnemonic_list, config)
+        do_decomp_diff(args.decomp_diff_1, args.decomp_diff_2, args.decomp_diff_results_info, args.decomp_diff_results_scores, args.decomp_diff_num_iterations, config)
         sys.exit(0)
     else:
         if args.ds_test:
