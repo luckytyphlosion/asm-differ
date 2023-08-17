@@ -207,7 +207,7 @@ def main():
     asm_output = []
     src_output = []
 
-    for hgss_full_addr, corresponding_plat_and_retsam_symbols in hgss_to_retsam_zero_scores.items():
+    for hgss_full_addr, corresponding_plat_and_retsam_symbols in sorted(hgss_to_retsam_zero_scores.items(), key=lambda x: x[0]):
         hgss_symbol = hgss_xmap.symbols_by_addr[hgss_full_addr]
         plat_and_retsam_symbol_names_and_addrs = []
 
@@ -236,7 +236,7 @@ def main():
     nonzero_asm_output = []
     nonzero_src_output = []
 
-    for hgss_full_addr, scores_for_hgss_symbol in nonzero_score_tracker.score_table.items():
+    for hgss_full_addr, scores_for_hgss_symbol in sorted(nonzero_score_tracker.score_table.items(), key=lambda x: x[0]):
         hgss_symbol = hgss_xmap.symbols_by_addr[hgss_full_addr]
         cur_output = ""
         cur_output += f"{hgss_symbol.name} ({hgss_full_addr}):\n"
