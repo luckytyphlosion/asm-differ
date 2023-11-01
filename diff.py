@@ -3856,6 +3856,10 @@ class DecompDiffResults:
         self.cur_processed_output.clear()
         self.cur_score_output.clear()
 
+    def save_at_processed_function_count(self, count):
+        if len(self.cur_processed_output) >= count:
+            self.save()
+
 DecomposedFunction_count = 0
 
 class DecomposedFunction:
@@ -4100,7 +4104,8 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
                 unordered_heuristic_score_scaled = unordered_heuristic_score * line_count_diff_percent_weight
 
                 # abort if the number of changed opcodes scaled by line_count_diff_percent_weight is greater than min line count with a cap at 20 
-                if unordered_heuristic_score_scaled > min(min_line_count, 20):
+                #if unordered_heuristic_score_scaled > min(min_line_count, 20):
+                if unordered_heuristic_score_scaled >= 30:
                     ## making shit up here
                     #if unordered_heuristic_score < 20:
                     #    ordered_heuristic_score = decomposed_function_1.ordered_heuristic_compare(decomposed_function_2)
@@ -4161,6 +4166,7 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
                 processed_functions_info.clear()
 
             decomp_diff_results.set_function_processed(decomposed_function_1)
+            decomp_diff_results.save_at_processed_function_count(2000)
 
             decomposed_function_1_count += 1
             if decomposed_function_1_count >= decomp_diff_num_iterations:
@@ -4179,7 +4185,7 @@ def do_decomp_diff(decomp_db_1_filename, decomp_db_2_filename, decomp_diff_resul
 
     decomp_diff_results.save()
 
-# python3 diff.py --decomp-diff-1 retsam_decomposed_function_database.json --decomp-diff-2 pokeheartgold_decomposed_function_database.json --decomp-diff-results-info retsam_pokeheartgold_processed.dump --decomp-diff-results-score retsam_pokeheartgold_scores.dump -I --no-show-branches NitroMain
+# python3 diff.py --decomp-diff-1 retsam_decomposed_function_database.json --decomp-diff-2 pokeheartgold_decomposed_function_database.json --decomp-diff-results-info retsam_pokeheartgold_processed.dump --decomp-diff-results-score retsam_pokeheartgold_scores.dump -I --no-show-branches --line-nums-start-at-zero --ignore-addr-diffs NitroMain
 
 def main() -> None:
     args = parser.parse_args()

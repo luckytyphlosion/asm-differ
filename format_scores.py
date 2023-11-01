@@ -53,6 +53,59 @@ class NonzeroScoreTracker:
     def has_addr(self, hgss_full_addr):
         return hgss_full_addr in self.score_table
 
+    def format_output(self, hgss_xmap, function_filename_asm_or_src, create_combined_output=False):
+        nonzero_asm_output = []
+        nonzero_src_output = []
+        nonzero_combined_output_list = []
+
+        for hgss_full_addr, scores_for_hgss_symbol in sorted(self.score_table.items(), key=lambda x: x[0]):
+            hgss_symbol = hgss_xmap.symbols_by_addr[hgss_full_addr]
+            cur_output = ""
+            cur_output += f"{hgss_symbol.name} ({hgss_full_addr})"
+            cur_output_pt2 = ""
+
+            for score, corresponding_plat_and_retsam_symbols in sorted(scores_for_hgss_symbol.items(), key=lambda x: x[0])[:5]:
+                cur_output_pt2 += f"  Score: {score}\n"
+
+                plat_and_retsam_symbol_names_and_addrs = []
+
+                for i, corresponding_plat_and_retsam_symbol in enumerate(corresponding_plat_and_retsam_symbols):
+                    plat_symbol = corresponding_plat_and_retsam_symbol.plat_symbol
+                    retsam_symbol = corresponding_plat_and_retsam_symbol.retsam_symbol
+        
+                    if plat_symbol is not None:
+                        plat_and_retsam_symbol_names_and_addrs.append(f"    {plat_symbol.name}, {retsam_symbol.name} [{retsam_symbol.full_addr}]\n")
+                    else:
+                        plat_and_retsam_symbol_names_and_addrs.append(f"    {retsam_symbol.name} ({retsam_symbol.filename})\n")
+                    if i >= 4:
+                        plat_and_retsam_symbol_names_and_addrs.append(f"    <{len(corresponding_plat_and_retsam_symbols) - 5} functions remaining>\n")
+                        break
+
+                cur_output_pt2 += f"{''.join(plat_and_retsam_symbol_names_and_addrs)}\n"
+
+            cur_output_uncombined = f"{cur_output}:\n{cur_output_pt2}"
+            
+            if function_filename_asm_or_src[hgss_symbol.filename] == "asm":
+                is_asm_func = True
+                nonzero_asm_output.append(cur_output_uncombined)
+            else:
+                is_asm_func = False
+                nonzero_src_output.append(cur_output_uncombined)
+
+            if create_combined_output:
+                cur_output_combined = f"{cur_output} [{'asm' if is_asm_func else 'src'}]:\n{cur_output_pt2}"
+                nonzero_combined_output_list.append(cur_output_combined)
+
+        nonzero_output = ""
+        nonzero_output += f"== ASM functions (total {len(nonzero_asm_output)}) ==\n{''.join(nonzero_asm_output)}\n\n== src functions (total {len(nonzero_src_output)}) ==\n{''.join(nonzero_src_output)}\n"
+
+        if len(nonzero_combined_output_list) != 0:
+            nonzero_combined_output = f"== All functions (total {len(nonzero_combined_output_list)}) ==\n{''.join(nonzero_combined_output_list)}\n"
+        else:
+            nonzero_combined_output = ""
+
+        return nonzero_output, nonzero_combined_output
+
 def diff_line_to_table_line(line):
     cells = [
         (line[0].base or Text(), line[0].line1),
@@ -108,13 +161,16 @@ def create_diff2_func():
 
     def diff2(hgss_func, retsam_func):
         hgss_symbol = hgss_xmap.symbols_by_name[hgss_func][0]
-        retsam_symbol = retsam_xmap.symbols_by_name[retsam_func][0]
-
         hgss_key = f"p.{hgss_symbol.full_addr}"
-        retsam_key = f"r.{retsam_symbol.full_addr}"
-
         hgss_decomposed_function = hgss_decomposed_functions_by_key[hgss_key]
-        retsam_decomposed_function = retsam_decomposed_functions_by_key[retsam_key]
+
+        retsam_symbols = retsam_xmap.symbols_by_name.get(retsam_func)
+        if retsam_symbols is not None:
+            retsam_symbol = retsam_symbols[0]
+            retsam_key = f"r.{retsam_symbol.full_addr}"
+            retsam_decomposed_function = retsam_decomposed_functions_by_key[retsam_key]
+        else:
+            retsam_decomposed_function = retsam_decomposed_functions_by_key[retsam_func]
 
         #hgss_contents = hgss_decomposed_function.
         #print(f"== hgss ==\n{hgss_contents}\n\n== retsam ==\n{retsam_contents}")
@@ -177,6 +233,7 @@ def main():
 
     print("Going over scores!")
     nonzero_score_tracker = NonzeroScoreTracker()
+    both_score_tracker = NonzeroScoreTracker()
 
     sorted_scores = sorted(scores.items(), key=lambda x: x[1])
 
@@ -197,6 +254,8 @@ def main():
             hgss_to_retsam_zero_scores[hgss_symbol.full_addr].append(PlatAndRetsamSymbol(plat_symbol, retsam_symbol))
         elif not hgss_symbol.full_addr in hgss_to_retsam_zero_scores:
             nonzero_score_tracker.add(hgss_symbol, plat_symbol, retsam_symbol, score)
+
+        both_score_tracker.add(hgss_symbol, plat_symbol, retsam_symbol, score)
 
         if i & 0xffff == 0:
             print(f"i: {i}")
@@ -233,46 +292,20 @@ def main():
     output = ""
     output += f"== ASM functions (total {len(asm_output)}) ==\n{''.join(asm_output)}\n\n== src functions (total {len(src_output)}) ==\n{''.join(src_output)}\n"
 
-    nonzero_asm_output = []
-    nonzero_src_output = []
-
-    for hgss_full_addr, scores_for_hgss_symbol in sorted(nonzero_score_tracker.score_table.items(), key=lambda x: x[0]):
-        hgss_symbol = hgss_xmap.symbols_by_addr[hgss_full_addr]
-        cur_output = ""
-        cur_output += f"{hgss_symbol.name} ({hgss_full_addr}):\n"
-
-        for score, corresponding_plat_and_retsam_symbols in sorted(scores_for_hgss_symbol.items(), key=lambda x: x[0])[:5]:
-            cur_output += f"  Score: {score}\n"
-
-            plat_and_retsam_symbol_names_and_addrs = []
-
-            for i, corresponding_plat_and_retsam_symbol in enumerate(corresponding_plat_and_retsam_symbols):
-                plat_symbol = corresponding_plat_and_retsam_symbol.plat_symbol
-                retsam_symbol = corresponding_plat_and_retsam_symbol.retsam_symbol
-    
-                if plat_symbol is not None:
-                    plat_and_retsam_symbol_names_and_addrs.append(f"    {plat_symbol.name}, {retsam_symbol.name} [{retsam_symbol.full_addr}]\n")
-                else:
-                    plat_and_retsam_symbol_names_and_addrs.append(f"    {retsam_symbol.name} ({retsam_symbol.filename})\n")
-                if i >= 4:
-                    plat_and_retsam_symbol_names_and_addrs.append(f"    <{len(corresponding_plat_and_retsam_symbols) - 5} functions remaining>\n")
-                    break
-
-            cur_output += f"{''.join(plat_and_retsam_symbol_names_and_addrs)}\n"
-
-        if function_filename_asm_or_src[hgss_symbol.filename] == "asm":
-            nonzero_asm_output.append(cur_output)
-        else:
-            nonzero_src_output.append(cur_output)
-
-    nonzero_output = ""
-    nonzero_output += f"== ASM functions (total {len(nonzero_asm_output)}) ==\n{''.join(nonzero_asm_output)}\n\n== src functions (total {len(nonzero_src_output)}) ==\n{''.join(nonzero_src_output)}\n"
+    nonzero_output, nonzero_combined_output = nonzero_score_tracker.format_output(hgss_xmap, function_filename_asm_or_src)
+    both_output, both_combined_output = both_score_tracker.format_output(hgss_xmap, function_filename_asm_or_src, True)
 
     with open("hgss_retsam_matching_funcs.txt", "w+") as f:
-        f.write("".join(output))
+        f.write(output)
 
     with open("hgss_retsam_similar_funcs.txt", "w+") as f:
-        f.write("".join(nonzero_output))
+        f.write(nonzero_output)
+
+    with open("hgss_retsam_all_funcs.txt", "w+") as f:
+        f.write(both_output)
+
+    with open("hgss_retsam_all_funcs_combined.txt", "w+") as f:
+        f.write(both_combined_output)
 
 if __name__ == "__main__":
     main()
