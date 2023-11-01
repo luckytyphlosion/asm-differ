@@ -7,3 +7,4 @@ __pycache__/
 *.diff
 *.txt
 *.7z
+!retsam_object_files.txt

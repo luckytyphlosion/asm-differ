@@ -3919,6 +3919,17 @@ class DecomposedFunction:
 
         return cls(serialized_input["name"], Symbol.unserialize(serialized_input["symbol"]), serialized_input["contents"], serialized_input["deadstripped"], short_id)
 
+    @staticmethod
+    def get_key_from_json(short_id, sym_info):
+        if sym_info["deadstripped"]:
+            return f"{short_id}.{sym_info['symbol']['filename']}.{sym_info['name']}"
+        else:
+            full_addr = sym_info['symbol']['full_addr']
+            overlay = full_addr["overlay"]
+            addr = full_addr["addr"]
+
+            return f"{short_id}.{overlay:02x}:{addr:07x}"
+    
     def get_key(self):
         if self.deadstripped:
             # deadstripped funcs have no addr, so have to rely on obj name and symbol

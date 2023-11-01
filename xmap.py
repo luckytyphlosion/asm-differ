@@ -45,7 +45,10 @@ class OvAddr:
         return NotImplemented
 
     def __repr__(self):
-        return f"{self.overlay:02x}:{self.addr:07x}"
+        try:
+            return f"{self.overlay:02x}:{self.addr:07x}"
+        except ValueError:
+            return f"{self.overlay:02x}:{int(self.addr):07x}!"
 
     def __lt__(self, other):
         if isinstance(other, OvAddr):
@@ -97,7 +100,7 @@ class Symbol:
         self.archive = archive
 
     def __repr__(self):
-        return f"Symbol(name={self.name}, full_addr={self.full_addr}, section={self.section}, size={self.size}, filename={self.filename}, archive={self.archive}"
+        return f"Symbol(name={self.name}, full_addr={self.full_addr}, section={self.section}, size={self.size}, filename={self.filename}, archive={self.archive})"
 
     def serialize(self):
         return {
@@ -121,12 +124,14 @@ class Symbol:
         )
 
 class XMap:
-    __slots__ = ("filename", "start_section", "symbols_by_addr", "symbols_by_name", "overlay_start_addrs", "overlay_end_addrs", "overlay_text_end_addrs", "symbols_by_filename", "archive_filenames_by_archive", "filename_archives_by_filename")
+    __slots__ = ("filename", "start_section", "symbols_by_addr", "symbols_and_indices_by_addr", "symbols_ordered_by_addr", "symbols_by_name", "overlay_start_addrs", "overlay_end_addrs", "overlay_text_end_addrs", "symbols_by_filename", "archive_filenames_by_archive", "filename_archives_by_filename")
 
     def __init__(self, filename, start_section):
         self.filename = filename
         self.start_section = start_section
         self.symbols_by_addr = {}
+        self.symbols_and_indices_by_addr = {}
+        self.symbols_ordered_by_addr = None
         self.symbols_by_name = {}
         self.overlay_start_addrs = {}
         self.overlay_end_addrs = {}
@@ -214,7 +219,10 @@ class XMap:
                         else:
                             self.symbols_by_filename[symbol.filename].append(symbol)
 
-        self.symbols_by_addr = {k: v for k, v in sorted(self.symbols_by_addr.items(), key=lambda item: item[1].full_addr)}
+        symbols_and_addrs_ordered_by_addr = sorted(self.symbols_by_addr.items(), key=lambda item: item[1].full_addr)
+        self.symbols_by_addr = {k: v for k, v in symbols_and_addrs_ordered_by_addr}
+        self.symbols_and_indices_by_addr = {k: (v, i) for i, (k, v) in enumerate(symbols_and_addrs_ordered_by_addr)}
+        self.symbols_ordered_by_addr = [v for (k, v) in symbols_and_addrs_ordered_by_addr]
 
     def gen_archive_filename_info(self):
         for symbols in self.symbols_by_name.values():
