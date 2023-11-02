@@ -46,6 +46,8 @@ def main():
         DEFAULT_BUILD_DIR = "../retsam_00jupc/obj"
         DATABASE_FILENAME = "retsam_decomposed_function_database.json"
         DEFAULT_ID = "retsam"
+        with open("retsam_object_files.txt", "r") as f:
+            object_files = f.read().strip().splitlines()
     else:
         print("No mode selected!")
         sys.exit(1)
@@ -64,8 +66,9 @@ def main():
 
     obj_basenames_from_xmap = {basename: 0 for basename in xmap.symbols_by_filename.keys()}
     existing_obj_full_filenames = []
+    obj_file_iterable = object_files if MODE == 1 else glob.glob(f"{args.build_dir}/**/*.o", recursive=True)
 
-    for obj_full_filename in glob.glob(f"{args.build_dir}/**/*.o", recursive=True):
+    for obj_full_filename in obj_file_iterable:
         print(f"obj_full_filename: {obj_full_filename}")
 
         if "/lib/" in obj_full_filename:
@@ -85,6 +88,7 @@ def main():
     decomposed_function_database_contents = []
     obj_symbol_names = set()
     iter_count = 0
+    previous_obj_last_symbol_addr = None
 
     for obj_full_filename in existing_obj_full_filenames:
         print(f"Disassembling {obj_full_filename}!")
@@ -100,7 +104,13 @@ def main():
 
         no_section_asm_differ_output = stripped_asm_differ_output.replace("Disassembly of section .text:", "").strip()
 
+        obj_last_symbol_addr = None
+        obj_first_non_deadstripped_addr = None
+        obj_delayed_deadstripped_addrs = []
+        num_successive_deadstripped_functions = 0
+
         decomposed_functions_str_for_obj = [x.strip() for x in decomposed_function_addr_split_regex.split(no_section_asm_differ_output)]
+        
         for decomposed_function_str in decomposed_functions_str_for_obj:
             if decomposed_function_str == "":
                 continue
@@ -116,19 +126,32 @@ def main():
 
             found_symbol_serialized = check_symbol_deadstripped(xmap, function_name, obj_basename)
             if found_symbol_serialized is None:
+                deadstripped_symbol_addr = {}
+
+                if obj_last_symbol_addr is not None:
+                    deadstripped_symbol_addr["overlay"] = obj_last_symbol_addr["overlay"]
+                    deadstripped_symbol_addr["addr"] = obj_last_symbol_addr["addr"] + (1 + num_successive_deadstripped_functions) / 1024
+                    previous_obj_last_symbol_addr = deadstripped_symbol_addr
+                    num_successive_deadstripped_functions += 1
+                else:
+                    obj_delayed_deadstripped_addrs.append(deadstripped_symbol_addr)
+                    
                 deadstripped = True
                 found_symbol_serialized = {
                     "name": function_name,
-                    "full_addr": {
-                        "overlay": -1,
-                        "addr": -1
-                    },
+                    "full_addr": deadstripped_symbol_addr,
                     "section": ".text",
                     "size": 0,
                     "filename": obj_basename,
                     "archive": None
                 }
             else:
+                num_successive_deadstripped_functions = 0
+                obj_last_symbol_addr = found_symbol_serialized["full_addr"]
+                previous_obj_last_symbol_addr = obj_last_symbol_addr
+                if obj_first_non_deadstripped_addr is None:
+                    obj_first_non_deadstripped_addr = obj_last_symbol_addr
+
                 deadstripped = False
 
             decomposed_function = {
@@ -140,7 +163,14 @@ def main():
 
             obj_symbol_names.add(function_name)
             decomposed_function_database_contents.append(decomposed_function)
-        
+
+        if obj_first_non_deadstripped_addr is None:
+            obj_first_non_deadstripped_addr = previous_obj_last_symbol_addr
+
+        for num_successive_deadstripped_functions_plus_1, obj_delayed_deadstripped_addr in enumerate(obj_delayed_deadstripped_addrs, 1):
+            obj_delayed_deadstripped_addr["overlay"] = obj_first_non_deadstripped_addr["overlay"]
+            obj_delayed_deadstripped_addr["addr"] = obj_first_non_deadstripped_addr["addr"] + num_successive_deadstripped_functions_plus_1 / 1024
+
         iter_count += 1
         #if iter_count > 5:
         #    break

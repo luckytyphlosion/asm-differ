@@ -29,6 +29,9 @@ def load_pickle_from_filename(filename):
 
 MAX_NONZERO_SCORE_ENTRIES = 5
 
+# hgss filename | plat filename | retsam filename | hgss addr | hgss name | plat addr | plat name | retsam name
+#                                                                           plat addr | plat name | retsam name
+
 class NonzeroScoreTracker:
     __slots__ = ("score_table", "last_entry_score")
 
@@ -53,6 +56,8 @@ class NonzeroScoreTracker:
 
     def has_addr(self, hgss_full_addr):
         return hgss_full_addr in self.score_table
+
+
 
     def format_output(self, hgss_xmap, function_filename_asm_or_src, create_combined_output=False):
         nonzero_asm_output = []
@@ -109,12 +114,21 @@ class NonzeroScoreTracker:
 
 
 class SpreadsheetEntry:
-    __slots__ = ("plat_symbol", "retsam_symbol", "hgss_symbol")
+    __slots__ = ("plat_symbol", "retsam_symbol", "hgss_symbol", "score")
 
-    def __init__(self, plat_symbol, retsam_symbol, hgss_symbol):
+    def __init__(self, plat_symbol, retsam_symbol, hgss_symbol, score):
         self.plat_symbol = plat_symbol
         self.retsam_symbol = retsam_symbol
         self.hgss_symbol = hgss_symbol
+        self.score = score
+
+class SpreadsheetAmbiguousEntry:
+    __slots__ = ("plat_and_retsam_symbols", "hgss_symbol", "score")
+
+    def __init__(self, plat_and_retsam_symbols, hgss_symbol, score):
+        self.plat_and_retsam_symbols = plat_and_retsam_symbols
+        self.hgss_symbol = hgss_symbol
+        self.score = score
 
 def main():
     print("Reading in files!")
@@ -179,7 +193,7 @@ def main():
         elif not hgss_symbol.full_addr in hgss_to_retsam_zero_scores:
             nonzero_score_tracker.add(hgss_symbol, plat_symbol, retsam_symbol, score)
 
-        both_score_tracker.add(hgss_symbol, plat_symbol, retsam_symbol, score)
+        #both_score_tracker.add(hgss_symbol, plat_symbol, retsam_symbol, score)
 
         if i & 0xffff == 0:
             #break
@@ -189,65 +203,82 @@ def main():
         #    break
 
     spreadsheet_data = {}
+    ambiguous_corresponding_plat_and_retsam_symbols = {}
+
+    # evaluate all
 
     for hgss_full_addr, corresponding_plat_and_retsam_symbols in sorted(hgss_to_retsam_zero_scores.items(), key=lambda x: x[0]):
         hgss_symbol, hgss_symbol_index = hgss_xmap.symbols_and_indices_by_addr[hgss_full_addr]
         if len(corresponding_plat_and_retsam_symbols) == 1:
             plat_symbol = corresponding_plat_and_retsam_symbols[0].plat_symbol
             retsam_symbol = corresponding_plat_and_retsam_symbols[0].retsam_symbol
-
-            spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol)
+            spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol, 0)
         else:
-            print(f"Finding previous HGSS symbol to {hgss_symbol.name}!")
-            hgss_prev_symbol_index = hgss_symbol_index - 1
-            while True:
-                hgss_prev_symbol = hgss_xmap.symbols_ordered_by_addr[hgss_prev_symbol_index]
-                spreadsheet_entry = spreadsheet_data.get(hgss_prev_symbol.full_addr)
-                if spreadsheet_entry is not None:
-                    break
-                hgss_prev_symbol_index -= 1
+            ambiguous_corresponding_plat_and_retsam_symbols[hgss_symbol.full_addr] = SpreadsheetAmbiguousEntry(corresponding_plat_and_retsam_symbols, hgss_symbol, 0)
 
-            print(f"Found previous hgss symbol: {hgss_prev_symbol.name}")
-            retsam_prev_symbol = spreadsheet_entry.retsam_symbol
-            print(f"Corresponding previous retsam symbol: {retsam_prev_symbol.name}")
-            closest_retsam_symbol_to_prev = None
-            corresponding_plat_symbol_for_closest_retsam_symbol_to_prev = None
-            best_retsam_symbol_diff = 9999999999
-
-            for corresponding_plat_and_retsam_symbol in corresponding_plat_and_retsam_symbols:
-                print(f"corresponding_plat_and_retsam_symbol.retsam_symbol: {corresponding_plat_and_retsam_symbol.retsam_symbol}")
-                print(f"corresponding_plat_and_retsam_symbol.plat_symbol: {corresponding_plat_and_retsam_symbol.plat_symbol}")
-                possible_retsam_symbol = corresponding_plat_and_retsam_symbol.retsam_symbol
-                if possible_retsam_symbol.full_addr.overlay != retsam_prev_symbol.full_addr.overlay:
-                    continue
-
-                current_retsam_symbol_diff = possible_retsam_symbol.full_addr.addr - retsam_prev_symbol.full_addr.addr
-                if current_retsam_symbol_diff > 0 and current_retsam_symbol_diff < best_retsam_symbol_diff:
-                    best_retsam_symbol_diff = current_retsam_symbol_diff
-                    closest_retsam_symbol_to_prev = possible_retsam_symbol
-                    corresponding_plat_symbol_for_closest_retsam_symbol_to_prev = corresponding_plat_and_retsam_symbol.plat_symbol
-
-            if closest_retsam_symbol_to_prev is None:
-                raise RuntimeError()
-
-            retsam_symbol = closest_retsam_symbol_to_prev
-            plat_symbol = corresponding_plat_symbol_for_closest_retsam_symbol_to_prev
-
-            spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol)
+    for hgss_full_addr, scores_for_hgss_symbol in sorted(nonzero_score_tracker.score_table.items(), key=lambda x: x[0]):
+        hgss_symbol = hgss_xmap.symbols_by_addr[hgss_full_addr]
+        score, corresponding_plat_and_retsam_symbols = sorted(scores_for_hgss_symbol.items(), key=lambda x: x[0])[0]
+        if len(corresponding_plat_and_retsam_symbols) == 1:
+            plat_symbol = corresponding_plat_and_retsam_symbols[0].plat_symbol
+            retsam_symbol = corresponding_plat_and_retsam_symbols[0].retsam_symbol
+            spreadsheet_data[hgss_full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol, score)
+        else:
+            ambiguous_corresponding_plat_and_retsam_symbols[hgss_symbol.full_addr] = SpreadsheetAmbiguousEntry(corresponding_plat_and_retsam_symbols, hgss_symbol, score)
+        #for score, corresponding_plat_and_retsam_symbols in [:5]:
+        #
+        #else:
+        #    print(f"Finding previous HGSS symbol to {hgss_symbol.name}!")
+        #    hgss_prev_symbol_index = hgss_symbol_index - 1
+        #    while True:
+        #        hgss_prev_symbol = hgss_xmap.symbols_ordered_by_addr[hgss_prev_symbol_index]
+        #        spreadsheet_entry = spreadsheet_data.get(hgss_prev_symbol.full_addr)
+        #        if spreadsheet_entry is not None:
+        #            break
+        #        hgss_prev_symbol_index -= 1
+        #
+        #    print(f"Found previous hgss symbol: {hgss_prev_symbol.name}")
+        #    retsam_prev_symbol = spreadsheet_entry.retsam_symbol
+        #    print(f"Corresponding previous retsam symbol: {retsam_prev_symbol.name}")
+        #    closest_retsam_symbol_to_prev = None
+        #    corresponding_plat_symbol_for_closest_retsam_symbol_to_prev = None
+        #    best_retsam_symbol_diff = 9999999999
+        #
+        #    for corresponding_plat_and_retsam_symbol in corresponding_plat_and_retsam_symbols:
+        #        print(f"corresponding_plat_and_retsam_symbol.retsam_symbol: {corresponding_plat_and_retsam_symbol.retsam_symbol}")
+        #        print(f"corresponding_plat_and_retsam_symbol.plat_symbol: {corresponding_plat_and_retsam_symbol.plat_symbol}")
+        #        possible_retsam_symbol = corresponding_plat_and_retsam_symbol.retsam_symbol
+        #        if possible_retsam_symbol.full_addr.overlay != retsam_prev_symbol.full_addr.overlay:
+        #            continue
+        #
+        #        current_retsam_symbol_diff = possible_retsam_symbol.full_addr.addr - retsam_prev_symbol.full_addr.addr
+        #        if current_retsam_symbol_diff > 0 and current_retsam_symbol_diff < best_retsam_symbol_diff:
+        #            best_retsam_symbol_diff = current_retsam_symbol_diff
+        #            closest_retsam_symbol_to_prev = possible_retsam_symbol
+        #            corresponding_plat_symbol_for_closest_retsam_symbol_to_prev = corresponding_plat_and_retsam_symbol.plat_symbol
+        #
+        #    if closest_retsam_symbol_to_prev is None:
+        #        raise RuntimeError()
+        #
+        #    retsam_symbol = closest_retsam_symbol_to_prev
+        #    plat_symbol = corresponding_plat_symbol_for_closest_retsam_symbol_to_prev
+        #
+        #    spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol)
 
     output = []
-    # plat addr, plat name, retsam name, hgss addr, hgss name
-    for hgss_symbol_full_addr, spreadsheet_entry in spreadsheet_data.items():
-        cur_output = [""] * 5
+    # hgss addr, plat addr, hgss name, plat name, retsam name, score
+    for hgss_symbol_full_addr, spreadsheet_entry in sorted(spreadsheet_data.items(), key=lambda x: x[0]):
+        cur_output = [""] * 6
         if spreadsheet_entry.plat_symbol is not None:
-            cur_output[0] = str(spreadsheet_entry.plat_symbol.full_addr)
-            cur_output[1] = spreadsheet_entry.plat_symbol.name
+            cur_output[1] = f"'{spreadsheet_entry.plat_symbol.full_addr}"
+            cur_output[3] = spreadsheet_entry.plat_symbol.name
 
-        cur_output[2] = spreadsheet_entry.retsam_symbol.name
+        cur_output[5] = spreadsheet_entry.retsam_symbol.name
         if spreadsheet_entry.hgss_symbol is not None:
-            cur_output[3] = str(spreadsheet_entry.hgss_symbol.full_addr)
-            cur_output[4] = spreadsheet_entry.hgss_symbol.name
+            cur_output[0] = f"'{spreadsheet_entry.hgss_symbol.full_addr}"
+            cur_output[2] = spreadsheet_entry.hgss_symbol.name
 
+        cur_output[4] = str(spreadsheet_entry.score)
         output.append("\t".join(cur_output))
 
     with open("gen_plat_hgss_func_spreadsheet_out.dump", "w+") as f:
