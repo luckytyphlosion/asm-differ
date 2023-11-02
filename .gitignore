@@ -8,3 +8,4 @@ __pycache__/
 *.txt
 *.7z
 !retsam_object_files.txt
+*.tsv

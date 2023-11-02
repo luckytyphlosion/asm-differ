@@ -123,12 +123,13 @@ class NonzeroScoreTracker:
 #        self.score = score
 
 class SpreadsheetEntry:
-    __slots__ = ("plat_and_retsam_symbols", "hgss_symbol", "score")
+    __slots__ = ("hgss_symbol", "score_table")
 
-    def __init__(self, plat_and_retsam_symbols, hgss_symbol, score):
-        self.plat_and_retsam_symbols = plat_and_retsam_symbols
+    def __init__(self, hgss_symbol, score_table):
         self.hgss_symbol = hgss_symbol
-        self.score = score
+        self.score_table = score_table
+
+LONG_LINE = "------------------------------------------------------------"
 
 def main():
     print("Reading in files!")
@@ -214,17 +215,17 @@ def main():
         #    retsam_symbol = corresponding_plat_and_retsam_symbols[0].retsam_symbol
         #    spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol, 0)
         #else:
-        spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(corresponding_plat_and_retsam_symbols, hgss_symbol, 0)
+        spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(hgss_symbol, ((0, corresponding_plat_and_retsam_symbols),))
 
     for hgss_full_addr, scores_for_hgss_symbol in sorted(nonzero_score_tracker.score_table.items(), key=lambda x: x[0]):
         hgss_symbol = hgss_xmap.symbols_by_addr[hgss_full_addr]
-        score, corresponding_plat_and_retsam_symbols = sorted(scores_for_hgss_symbol.items(), key=lambda x: x[0])[0]
+        score_table = sorted(scores_for_hgss_symbol.items(), key=lambda x: x[0])
         #if len(corresponding_plat_and_retsam_symbols) == 1:
         #    plat_symbol = corresponding_plat_and_retsam_symbols[0].plat_symbol
         #    retsam_symbol = corresponding_plat_and_retsam_symbols[0].retsam_symbol
         #    spreadsheet_data[hgss_full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol, score)
         #else:
-        spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(corresponding_plat_and_retsam_symbols, hgss_symbol, score)
+        spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(hgss_symbol, score_table)
         #for score, corresponding_plat_and_retsam_symbols in [:5]:
         #
         #else:
@@ -265,29 +266,73 @@ def main():
         #
         #    spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol)
 
+    outputs = {}
     output = []
     # hgss addr, plat addr, hgss name, plat name, retsam name, score
+    missing_plat_symbols_by_addr = dict(platinum_xmap.symbols_by_addr)
+
+    print(f"Emitting best matching symbols!")
+    prev_overlay = -1
+
     for hgss_symbol_full_addr, spreadsheet_entry in sorted(spreadsheet_data.items(), key=lambda x: x[0]):
-        for i, plat_and_retsam_symbol in enumerate(sorted(spreadsheet_entry.plat_and_retsam_symbols, key=lambda x: x.retsam_symbol.full_addr)):
-            cur_output = [""] * 6
-            if i == 0:
-                cur_output[0] = f"'{hgss_symbol_full_addr}"
-                cur_output[2] = spreadsheet_entry.hgss_symbol.name
-                cur_output[4] = str(spreadsheet_entry.score)
-            else:
-                cur_output[4] = "X"
+        if prev_overlay != hgss_symbol_full_addr.overlay:
+            outputs[prev_overlay] = output
+            output = []
+            prev_overlay = hgss_symbol_full_addr.overlay
 
-            if plat_and_retsam_symbol.plat_symbol is not None:
-                cur_output[1] = f"'{plat_and_retsam_symbol.plat_symbol.full_addr}"
-                cur_output[3] = plat_and_retsam_symbol.plat_symbol.name
+        for i, (score, plat_and_retsam_symbols_for_score) in enumerate(spreadsheet_entry.score_table):
+            for j, plat_and_retsam_symbol in enumerate(sorted(plat_and_retsam_symbols_for_score, key=lambda x: x.retsam_symbol.full_addr)):
+                cur_output = [""] * 6
+                if i == 0:
+                    cur_output[0] = f"'{hgss_symbol_full_addr}"
+                    cur_output[2] = spreadsheet_entry.hgss_symbol.name
+                if j == 0:
+                    cur_output[4] = str(score)
+                #else:
+                #    cur_output[4] = "X"
+    
+                if plat_and_retsam_symbol.plat_symbol is not None:
+                    cur_output[1] = f"'{plat_and_retsam_symbol.plat_symbol.full_addr}"
+                    cur_output[3] = plat_and_retsam_symbol.plat_symbol.name
+                    missing_plat_symbols_by_addr.pop(plat_and_retsam_symbol.plat_symbol.full_addr, None)
+    
+                cur_output[5] = plat_and_retsam_symbol.retsam_symbol.name
+    
+                output.append("\t".join(cur_output))
 
-            cur_output[5] = plat_and_retsam_symbol.retsam_symbol.name
-
-            output.append("\t".join(cur_output))
         output.append("")
 
-    with open("gen_plat_hgss_func_spreadsheet_out.dump", "w+") as f:
-        f.write("\n".join(output) + "\n")
+    outputs[hgss_symbol_full_addr.overlay] = output
+    output = []
+    output.append("\nMissing platinum symbols:\n")
+
+    print(f"Emitting missing platinum symbols!")
+    for missing_plat_symbol_full_addr, missing_plat_symbol in missing_plat_symbols_by_addr.items():
+        if missing_plat_symbol.section == ".text":
+            cur_output = [""] * 6
+            cur_output[1] = f"'{missing_plat_symbol_full_addr}"
+            cur_output[3] = missing_plat_symbol.name
+            missing_plat_symbol_corresponding_retsam_symbol = retsam_xmap.symbols_by_addr[missing_plat_symbol_full_addr]
+            cur_output[5] = missing_plat_symbol_corresponding_retsam_symbol.name
+            output.append("\t".join(cur_output))
+
+    outputs["Missing"] = output
+
+    pathlib.Path("gen_plat_hgss_func_spreadsheet_out_folder").mkdir(exist_ok=True)
+
+    full_output = []
+
+    for overlay, output in outputs.items():
+        full_output.extend(output)
+        with open(f"gen_plat_hgss_func_spreadsheet_out_folder/sheet_ov{overlay}.tsv", "w+") as f:
+            f.write("\n".join(output) + "\n")
+
+    with open("gen_plat_hgss_func_spreadsheet_out_full.tsv", "w+") as f:
+        f.write("\n".join(full_output) + "\n")
+
+        #output.append
+    #with open("gen_plat_hgss_func_spreadsheet_out.dump", "w+") as f:
+    #    f.write(
 
     #asm_output = []
     #src_output = []
