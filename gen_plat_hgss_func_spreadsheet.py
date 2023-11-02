@@ -113,16 +113,16 @@ class NonzeroScoreTracker:
         return nonzero_output, nonzero_combined_output
 
 
+#class SpreadsheetEntry:
+#    __slots__ = ("plat_symbol", "retsam_symbol", "hgss_symbol", "score")
+#
+#    def __init__(self, plat_symbol, retsam_symbol, hgss_symbol, score):
+#        self.plat_symbol = plat_symbol
+#        self.retsam_symbol = retsam_symbol
+#        self.hgss_symbol = hgss_symbol
+#        self.score = score
+
 class SpreadsheetEntry:
-    __slots__ = ("plat_symbol", "retsam_symbol", "hgss_symbol", "score")
-
-    def __init__(self, plat_symbol, retsam_symbol, hgss_symbol, score):
-        self.plat_symbol = plat_symbol
-        self.retsam_symbol = retsam_symbol
-        self.hgss_symbol = hgss_symbol
-        self.score = score
-
-class SpreadsheetAmbiguousEntry:
     __slots__ = ("plat_and_retsam_symbols", "hgss_symbol", "score")
 
     def __init__(self, plat_and_retsam_symbols, hgss_symbol, score):
@@ -209,22 +209,22 @@ def main():
 
     for hgss_full_addr, corresponding_plat_and_retsam_symbols in sorted(hgss_to_retsam_zero_scores.items(), key=lambda x: x[0]):
         hgss_symbol, hgss_symbol_index = hgss_xmap.symbols_and_indices_by_addr[hgss_full_addr]
-        if len(corresponding_plat_and_retsam_symbols) == 1:
-            plat_symbol = corresponding_plat_and_retsam_symbols[0].plat_symbol
-            retsam_symbol = corresponding_plat_and_retsam_symbols[0].retsam_symbol
-            spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol, 0)
-        else:
-            ambiguous_corresponding_plat_and_retsam_symbols[hgss_symbol.full_addr] = SpreadsheetAmbiguousEntry(corresponding_plat_and_retsam_symbols, hgss_symbol, 0)
+        #if len(corresponding_plat_and_retsam_symbols) == 1:
+        #    plat_symbol = corresponding_plat_and_retsam_symbols[0].plat_symbol
+        #    retsam_symbol = corresponding_plat_and_retsam_symbols[0].retsam_symbol
+        #    spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol, 0)
+        #else:
+        spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(corresponding_plat_and_retsam_symbols, hgss_symbol, 0)
 
     for hgss_full_addr, scores_for_hgss_symbol in sorted(nonzero_score_tracker.score_table.items(), key=lambda x: x[0]):
         hgss_symbol = hgss_xmap.symbols_by_addr[hgss_full_addr]
         score, corresponding_plat_and_retsam_symbols = sorted(scores_for_hgss_symbol.items(), key=lambda x: x[0])[0]
-        if len(corresponding_plat_and_retsam_symbols) == 1:
-            plat_symbol = corresponding_plat_and_retsam_symbols[0].plat_symbol
-            retsam_symbol = corresponding_plat_and_retsam_symbols[0].retsam_symbol
-            spreadsheet_data[hgss_full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol, score)
-        else:
-            ambiguous_corresponding_plat_and_retsam_symbols[hgss_symbol.full_addr] = SpreadsheetAmbiguousEntry(corresponding_plat_and_retsam_symbols, hgss_symbol, score)
+        #if len(corresponding_plat_and_retsam_symbols) == 1:
+        #    plat_symbol = corresponding_plat_and_retsam_symbols[0].plat_symbol
+        #    retsam_symbol = corresponding_plat_and_retsam_symbols[0].retsam_symbol
+        #    spreadsheet_data[hgss_full_addr] = SpreadsheetEntry(plat_symbol, retsam_symbol, hgss_symbol, score)
+        #else:
+        spreadsheet_data[hgss_symbol.full_addr] = SpreadsheetEntry(corresponding_plat_and_retsam_symbols, hgss_symbol, score)
         #for score, corresponding_plat_and_retsam_symbols in [:5]:
         #
         #else:
@@ -268,18 +268,23 @@ def main():
     output = []
     # hgss addr, plat addr, hgss name, plat name, retsam name, score
     for hgss_symbol_full_addr, spreadsheet_entry in sorted(spreadsheet_data.items(), key=lambda x: x[0]):
-        cur_output = [""] * 6
-        if spreadsheet_entry.plat_symbol is not None:
-            cur_output[1] = f"'{spreadsheet_entry.plat_symbol.full_addr}"
-            cur_output[3] = spreadsheet_entry.plat_symbol.name
+        for i, plat_and_retsam_symbol in enumerate(sorted(spreadsheet_entry.plat_and_retsam_symbols, key=lambda x: x.retsam_symbol.full_addr)):
+            cur_output = [""] * 6
+            if i == 0:
+                cur_output[0] = f"'{hgss_symbol_full_addr}"
+                cur_output[2] = spreadsheet_entry.hgss_symbol.name
+                cur_output[4] = str(spreadsheet_entry.score)
+            else:
+                cur_output[4] = "X"
 
-        cur_output[5] = spreadsheet_entry.retsam_symbol.name
-        if spreadsheet_entry.hgss_symbol is not None:
-            cur_output[0] = f"'{spreadsheet_entry.hgss_symbol.full_addr}"
-            cur_output[2] = spreadsheet_entry.hgss_symbol.name
+            if plat_and_retsam_symbol.plat_symbol is not None:
+                cur_output[1] = f"'{plat_and_retsam_symbol.plat_symbol.full_addr}"
+                cur_output[3] = plat_and_retsam_symbol.plat_symbol.name
 
-        cur_output[4] = str(spreadsheet_entry.score)
-        output.append("\t".join(cur_output))
+            cur_output[5] = plat_and_retsam_symbol.retsam_symbol.name
+
+            output.append("\t".join(cur_output))
+        output.append("")
 
     with open("gen_plat_hgss_func_spreadsheet_out.dump", "w+") as f:
         f.write("\n".join(output) + "\n")
